@@ -1539,7 +1539,7 @@ impl InternalTrack {
     }
 
     pub(crate) fn end(&mut self) -> &mut Self {
-        self.playing.change_to(PlayMode::End);
+        self.playing = self.playing.change_to(PlayMode::End);
 
         self
     }
