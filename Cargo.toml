@@ -70,13 +70,13 @@ version = "0.8"
 optional = true
 default-features = false
 features = ["voice", "gateway"]
-git = "https://github.com/serenity-rs/serenity"
-branch = "next"
+git = "https://github.com/GnomedDev/serenity"
+branch = "personal"
 
 [dependencies.serenity-voice-model]
 optional = true
-git = "https://github.com/serenity-rs/serenity"
-branch = "next"
+git = "https://github.com/GnomedDev/serenity"
+branch = "personal"
 
 [dependencies.streamcatcher]
 optional = true

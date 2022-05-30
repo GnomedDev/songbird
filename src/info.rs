@@ -13,7 +13,9 @@ impl ConnectionProgress {
             channel_id,
             guild_id,
             user_id,
-            ..Default::default()
+            endpoint: None,
+            session_id: None,
+            token: None,
         })
     }
 
@@ -138,7 +140,7 @@ impl fmt::Debug for ConnectionInfo {
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub(crate) struct Partial {
     pub channel_id: ChannelId,
     pub endpoint: Option<String>,

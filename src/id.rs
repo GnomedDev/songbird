@@ -8,7 +8,10 @@ use serenity::model::id::{
     GuildId as SerenityGuild,
     UserId as SerenityUser,
 };
-use std::fmt::{Display, Formatter, Result as FmtResult};
+use std::{
+    fmt::{Display, Formatter, Result as FmtResult},
+    num::NonZeroU64,
+};
 #[cfg(feature = "twilight")]
 use twilight_model::id::{
     marker::{ChannelMarker, GuildMarker, UserMarker},
@@ -16,105 +19,104 @@ use twilight_model::id::{
 };
 
 /// ID of a Discord voice/text channel.
-#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
-pub struct ChannelId(pub u64);
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct ChannelId(pub NonZeroU64);
 
 /// ID of a Discord guild (colloquially, "server").
-#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
-pub struct GuildId(pub u64);
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct GuildId(pub NonZeroU64);
 
 /// ID of a Discord user.
-#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
-pub struct UserId(pub u64);
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct UserId(pub NonZeroU64);
 
-impl Display for ChannelId {
-    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
-        Display::fmt(&self.0, f)
-    }
-}
+macro_rules! id_u64 {
+    ($($name:ident;)*) => {
+        $(
+            impl $name {
+                /// Creates a new Id from a u64
+                ///
+                /// # Panics
+                /// Panics if the id is zero.
+                #[must_use]
+                pub fn new(id_as_u64: u64) -> Self {
+                    Self(NonZeroU64::new(id_as_u64).unwrap())
+                }
 
-impl From<u64> for ChannelId {
-    fn from(id: u64) -> Self {
-        Self(id)
+                /// Retrieves the inner ID as u64
+                #[must_use]
+                pub fn get(self) -> u64 {
+                    self.0.get()
+                }
+            }
+
+            impl From<u64> for $name {
+                fn from(id: u64) -> Self {
+                    $name::new(id)
+                }
+            }
+
+            impl Display for $name {
+                fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+                    Display::fmt(&self.0, f)
+                }
+            }
+        )*
     }
 }
 
 #[cfg(feature = "serenity")]
-impl From<SerenityChannel> for ChannelId {
-    fn from(id: SerenityChannel) -> Self {
-        Self(id.0)
+macro_rules! id_u64_serenity {
+    ($($name:ident, $serenity:ident;)*) => {
+        $(
+            impl From<$serenity> for $name {
+                fn from(id: $serenity) -> Self {
+                    Self(id.0)
+                }
+            }
+        )*
     }
 }
 
 #[cfg(feature = "twilight")]
-impl From<TwilightId<ChannelMarker>> for ChannelId {
-    fn from(id: TwilightId<ChannelMarker>) -> Self {
-        Self(id.get().into())
+macro_rules! id_u64_twilight {
+    ($($name:ident, $twilight:ident;)*) => {
+        $(
+            impl From<TwilightId<$twilight>> for $name {
+                fn from(id: TwilightId<$twilight>) -> Self {
+                    Self(id.into_nonzero())
+                }
+            }
+        )*
     }
 }
 
-impl Display for GuildId {
-    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
-        Display::fmt(&self.0, f)
-    }
-}
-
-impl From<u64> for GuildId {
-    fn from(id: u64) -> Self {
-        Self(id)
-    }
-}
+id_u64! {ChannelId; GuildId; UserId;}
 
 #[cfg(feature = "serenity")]
-impl From<SerenityGuild> for GuildId {
-    fn from(id: SerenityGuild) -> Self {
-        Self(id.0)
-    }
-}
+id_u64_serenity!(
+    ChannelId, SerenityChannel;
+    GuildId, SerenityGuild;
+    UserId, SerenityUser;
+);
+
+#[cfg(feature = "twilight")]
+id_u64_twilight!(
+    ChannelId, ChannelMarker;
+    GuildId, GuildMarker;
+    UserId, UserMarker;
+);
 
 #[cfg(feature = "driver-core")]
 impl From<GuildId> for DriverGuild {
     fn from(id: GuildId) -> Self {
-        Self(id.0)
-    }
-}
-
-#[cfg(feature = "twilight")]
-impl From<TwilightId<GuildMarker>> for GuildId {
-    fn from(id: TwilightId<GuildMarker>) -> Self {
-        Self(id.get().into())
-    }
-}
-
-impl Display for UserId {
-    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
-        Display::fmt(&self.0, f)
-    }
-}
-
-impl From<u64> for UserId {
-    fn from(id: u64) -> Self {
-        Self(id)
-    }
-}
-
-#[cfg(feature = "serenity")]
-impl From<SerenityUser> for UserId {
-    fn from(id: SerenityUser) -> Self {
-        Self(id.0)
+        Self(id.get())
     }
 }
 
 #[cfg(feature = "driver-core")]
 impl From<UserId> for DriverUser {
     fn from(id: UserId) -> Self {
-        Self(id.0)
-    }
-}
-
-#[cfg(feature = "twilight")]
-impl From<TwilightId<UserMarker>> for UserId {
-    fn from(id: TwilightId<UserMarker>) -> Self {
-        Self(id.get().into())
+        Self(id.get())
     }
 }

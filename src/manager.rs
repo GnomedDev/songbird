@@ -33,7 +33,7 @@ use twilight_model::gateway::event::Event as TwilightEvent;
 struct ClientData {
     shard_count: u64,
     initialised: bool,
-    user_id: UserId,
+    user_id: Option<UserId>,
 }
 
 /// A shard-aware struct responsible for managing [`Call`]s.
@@ -111,7 +111,7 @@ impl Songbird {
                     .total()
                     .unwrap_or_else(|| cluster.shards().len() as u64),
                 initialised: true,
-                user_id: user_id.into(),
+                user_id: Some(user_id.into()),
             }),
             calls: Default::default(),
             sharder: Sharder::TwilightCluster(cluster),
@@ -133,7 +133,7 @@ impl Songbird {
         }
 
         client_data.shard_count = shard_count;
-        client_data.user_id = user_id.into();
+        client_data.user_id = Some(user_id.into());
         client_data.initialised = true;
     }
 
@@ -166,7 +166,7 @@ impl Songbird {
                 .entry(guild_id)
                 .or_insert_with(|| {
                     let info = self.manager_info();
-                    let shard = shard_id(guild_id.0, info.shard_count);
+                    let shard = shard_id(guild_id.get(), info.shard_count);
                     let shard_handle = self
                         .sharder
                         .get_shard(shard)
@@ -175,7 +175,7 @@ impl Songbird {
                     let call = Call::from_config(
                         guild_id,
                         shard_handle,
-                        info.user_id,
+                        info.user_id.expect("Manager has not been initialised"),
                         self.config.read().clone().unwrap_or_default(),
                     );
 
@@ -375,7 +375,12 @@ impl Songbird {
                 }
             },
             TwilightEvent::VoiceStateUpdate(v) => {
-                if v.0.user_id.get() != self.client_data.read().user_id.0 {
+                if self
+                    .client_data
+                    .read()
+                    .user_id
+                    .map_or(false, |u_id| v.0.user_id.into_nonzero() != u_id.0)
+                {
                     return;
                 }
 
@@ -431,7 +436,12 @@ impl VoiceGatewayManager for Songbird {
     }
 
     async fn state_update(&self, guild_id: SerenityGuild, voice_state: &VoiceState) {
-        if voice_state.user_id.0 != self.client_data.read().user_id.0 {
+        if self
+            .client_data
+            .read()
+            .user_id
+            .map_or(false, |u_id| u_id.0 == voice_state.user_id.0)
+        {
             return;
         }
 
