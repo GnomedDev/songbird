@@ -32,7 +32,6 @@ use twilight_model::gateway::event::Event as TwilightEvent;
 #[derive(Clone, Copy, Debug, Default)]
 struct ClientData {
     shard_count: u64,
-    initialised: bool,
     user_id: Option<UserId>,
 }
 
@@ -110,7 +109,6 @@ impl Songbird {
                     .shard_scheme()
                     .total()
                     .unwrap_or_else(|| cluster.shards().len() as u64),
-                initialised: true,
                 user_id: Some(user_id.into()),
             }),
             calls: Default::default(),
@@ -128,13 +126,12 @@ impl Songbird {
     pub fn initialise_client_data<U: Into<UserId>>(&self, shard_count: u64, user_id: U) {
         let mut client_data = self.client_data.write();
 
-        if client_data.initialised {
+        if client_data.user_id.is_some() {
             return;
         }
 
         client_data.shard_count = shard_count;
         client_data.user_id = Some(user_id.into());
-        client_data.initialised = true;
     }
 
     /// Retrieves a [`Call`] for the given guild, if one already exists.
