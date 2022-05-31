@@ -379,7 +379,7 @@ impl Songbird {
                     .client_data
                     .read()
                     .user_id
-                    .map_or(false, |u_id| v.0.user_id.into_nonzero() != u_id.0)
+                    .map_or(true, |u_id| v.0.user_id.into_nonzero() != u_id.0)
                 {
                     return;
                 }
@@ -440,7 +440,7 @@ impl VoiceGatewayManager for Songbird {
             .client_data
             .read()
             .user_id
-            .map_or(false, |u_id| u_id.0 == voice_state.user_id.0)
+            .map_or(true, |u_id| u_id.0 != voice_state.user_id.0)
         {
             return;
         }
