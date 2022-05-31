@@ -29,10 +29,10 @@ use twilight_gateway::Cluster;
 #[cfg(feature = "twilight")]
 use twilight_model::gateway::event::Event as TwilightEvent;
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug)]
 struct ClientData {
     shard_count: u64,
-    user_id: Option<UserId>,
+    user_id: UserId,
 }
 
 /// A shard-aware struct responsible for managing [`Call`]s.
@@ -43,7 +43,7 @@ struct ClientData {
 /// [`Call`]: Call
 #[derive(Debug)]
 pub struct Songbird {
-    client_data: PRwLock<ClientData>,
+    client_data: PRwLock<Option<ClientData>>,
     calls: DashMap<GuildId, Arc<Mutex<Call>>>,
     sharder: Sharder,
     config: PRwLock<Option<Config>>,
@@ -103,14 +103,14 @@ impl Songbird {
         U: Into<UserId>,
     {
         Self {
-            client_data: PRwLock::new(ClientData {
+            client_data: PRwLock::new(Some(ClientData {
                 shard_count: cluster
                     .config()
                     .shard_scheme()
                     .total()
                     .unwrap_or_else(|| cluster.shards().len() as u64),
-                user_id: Some(user_id.into()),
-            }),
+                user_id: user_id.into(),
+            })),
             calls: Default::default(),
             sharder: Sharder::TwilightCluster(cluster),
             config: Some(config).into(),
@@ -125,13 +125,14 @@ impl Songbird {
     /// [`::twilight`]: #method.twilight
     pub fn initialise_client_data<U: Into<UserId>>(&self, shard_count: u64, user_id: U) {
         let mut client_data = self.client_data.write();
-
-        if client_data.user_id.is_some() {
+        if client_data.is_some() {
             return;
         }
 
-        client_data.shard_count = shard_count;
-        client_data.user_id = Some(user_id.into());
+        *client_data = Some(ClientData {
+            shard_count,
+            user_id: user_id.into(),
+        });
     }
 
     /// Retrieves a [`Call`] for the given guild, if one already exists.
@@ -162,7 +163,11 @@ impl Songbird {
             self.calls
                 .entry(guild_id)
                 .or_insert_with(|| {
-                    let info = self.manager_info();
+                    let info = self
+                        .client_data
+                        .read()
+                        .expect("Manager has not been initialised");
+
                     let shard = shard_id(guild_id.get(), info.shard_count);
                     let shard_handle = self
                         .sharder
@@ -172,7 +177,7 @@ impl Songbird {
                     let call = Call::from_config(
                         guild_id,
                         shard_handle,
-                        info.user_id.expect("Manager has not been initialised"),
+                        info.user_id,
                         self.config.read().clone().unwrap_or_default(),
                     );
 
@@ -191,12 +196,6 @@ impl Songbird {
     pub fn set_config(&self, new_config: Config) {
         let mut config = self.config.write();
         *config = Some(new_config);
-    }
-
-    fn manager_info(&self) -> ClientData {
-        let client_data = self.client_data.write();
-
-        *client_data
     }
 
     #[cfg(feature = "driver-core")]
@@ -375,8 +374,7 @@ impl Songbird {
                 if self
                     .client_data
                     .read()
-                    .user_id
-                    .map_or(true, |u_id| v.0.user_id.into_nonzero() != u_id.0)
+                    .map_or(true, |data| v.0.user_id.into_nonzero() != data.user_id.0)
                 {
                     return;
                 }
@@ -436,8 +434,7 @@ impl VoiceGatewayManager for Songbird {
         if self
             .client_data
             .read()
-            .user_id
-            .map_or(true, |u_id| u_id.0 != voice_state.user_id.0)
+            .map_or(true, |data| data.user_id.0 != voice_state.user_id.0)
         {
             return;
         }
