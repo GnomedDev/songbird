@@ -137,6 +137,22 @@ impl Songbird {
         client_data.initialised = true;
     }
 
+    fn create_call(&self, guild_id: GuildId) -> Call {
+        let info = self.manager_info();
+        let shard = shard_id(guild_id.0, info.shard_count);
+        let shard_handle = self
+            .sharder
+            .get_shard(shard)
+            .expect("Failed to get shard handle: shard_count incorrect?");
+
+        Call::from_config(
+            guild_id,
+            shard_handle,
+            info.user_id,
+            self.config.read().clone().unwrap_or_default(),
+        )
+    }
+
     /// Retrieves a [`Call`] for the given guild, if one already exists.
     ///
     /// [`Call`]: Call
@@ -161,28 +177,10 @@ impl Songbird {
     }
 
     fn _get_or_insert(&self, guild_id: GuildId) -> Arc<Mutex<Call>> {
-        self.get(guild_id).unwrap_or_else(|| {
-            self.calls
-                .entry(guild_id)
-                .or_insert_with(|| {
-                    let info = self.manager_info();
-                    let shard = shard_id(guild_id.0, info.shard_count);
-                    let shard_handle = self
-                        .sharder
-                        .get_shard(shard)
-                        .expect("Failed to get shard handle: shard_count incorrect?");
-
-                    let call = Call::from_config(
-                        guild_id,
-                        shard_handle,
-                        info.user_id,
-                        self.config.read().clone().unwrap_or_default(),
-                    );
-
-                    Arc::new(Mutex::new(call))
-                })
-                .clone()
-        })
+        self.calls
+            .entry(guild_id)
+            .or_insert_with(|| Arc::new(Mutex::new(self.create_call(guild_id))))
+            .clone()
     }
 
     /// Sets a shared configuration for all drivers created from this
@@ -226,7 +224,7 @@ impl Songbird {
     /// [`get`]: Songbird::get
     /// [`process`]: #method.process
     #[inline]
-    pub async fn join<C, G>(&self, guild_id: G, channel_id: C) -> (Arc<Mutex<Call>>, JoinResult<()>)
+    pub async fn join<C, G>(&self, guild_id: G, channel_id: C) -> JoinResult<Arc<Mutex<Call>>>
     where
         C: Into<ChannelId>,
         G: Into<GuildId>,
@@ -239,20 +237,15 @@ impl Songbird {
         &self,
         guild_id: GuildId,
         channel_id: ChannelId,
-    ) -> (Arc<Mutex<Call>>, JoinResult<()>) {
-        let call = self.get_or_insert(guild_id);
+    ) -> JoinResult<Arc<Mutex<Call>>> {
+        let mut call = self.create_call(guild_id);
 
-        let stage_1 = {
-            let mut handler = call.lock().await;
-            handler.join(channel_id).await
-        };
+        call.join(channel_id).await?.await?;
 
-        let result = match stage_1 {
-            Ok(chan) => chan.await,
-            Err(e) => Err(e),
-        };
+        let wrapped_call = Arc::new(Mutex::new(call));
+        self.calls.insert(guild_id, wrapped_call.clone());
 
-        (call, result)
+        Ok(wrapped_call)
     }
 
     /// Partially connects to a target by retrieving its relevant [`Call`] and
