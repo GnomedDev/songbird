@@ -16,11 +16,13 @@ path = "../../../"
 features = ["cache", "framework", "standard_framework", "voice", "http", "rustls_backend"]
 git = "https://github.com/serenity-rs/serenity"
 # branch = "next"
-rev = "8d8ff3c6b6543182d3d679773c81a81fc60da74b"
+rev = "e9c200d9af74994d09e40ae129b44f642522932f"
 
 [dependencies.symphonia]
 version = "0.5"
 features = ["mp3"]
+git = "https://github.com/FelixMcFelix/Symphonia"
+branch = "songbird-fixes"
 
 [dependencies.tokio]
 version = "1.0"

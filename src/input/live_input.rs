@@ -1,9 +1,11 @@
 use super::{AudioStream, Metadata, MetadataError, Parsed};
 
 use symphonia_core::{
-    codecs::{CodecRegistry, Decoder},
+    codecs::{CodecRegistry, Decoder, DecoderOptions},
     errors::Error as SymphError,
-    io::{MediaSource, MediaSourceStream},
+    formats::FormatOptions,
+    io::{MediaSource, MediaSourceStream, MediaSourceStreamOptions},
+    meta::MetadataOptions,
     probe::Probe,
 };
 
@@ -43,7 +45,7 @@ impl LiveInput {
 
         if let LiveInput::Raw(r) = out {
             // TODO: allow passing in of MSS options?
-            let mss = MediaSourceStream::new(r.input, Default::default());
+            let mss = MediaSourceStream::new(r.input, MediaSourceStreamOptions::default());
             out = LiveInput::Wrapped(AudioStream {
                 input: mss,
                 hint: r.hint,
@@ -53,38 +55,49 @@ impl LiveInput {
         if let LiveInput::Wrapped(w) = out {
             let hint = w.hint.unwrap_or_default();
             let input = w.input;
+            let supports_backseek = input.is_seekable();
 
-            let probe_data =
-                probe.format(&hint, input, &Default::default(), &Default::default())?;
+            let probe_data = probe.format(
+                &hint,
+                input,
+                &FormatOptions::default(),
+                &MetadataOptions::default(),
+            )?;
             let format = probe_data.format;
             let meta = probe_data.metadata;
 
             let mut default_track_id = format.default_track().map(|track| track.id);
             let mut decoder: Option<Box<dyn Decoder>> = None;
 
+            // Awkward loop: we need BOTH a track ID, and a decoder matching that track ID.
             // Take default track (if it exists), take first track to be found otherwise.
             for track in format.tracks() {
-                if decoder.is_some() {
-                    break;
-                }
-
                 if default_track_id.is_some() && Some(track.id) != default_track_id {
                     continue;
                 }
 
-                let this_decoder = codecs.make(&track.codec_params, &Default::default())?;
+                let this_decoder = codecs.make(&track.codec_params, &DecoderOptions::default())?;
 
                 decoder = Some(this_decoder);
                 default_track_id = Some(track.id);
+
+                break;
             }
 
-            let track_id = default_track_id.unwrap();
+            // No tracks is a playout error, a bad default track is also possible.
+            // These are probably malformed? We could go best-effort, and fall back to tracks[0]
+            // but drop such tracks for now.
+            let track_id = default_track_id.ok_or(SymphError::DecodeError("no track found"))?;
+            let decoder = decoder.ok_or(SymphError::DecodeError(
+                "reported default track did not exist",
+            ))?;
 
             let p = Parsed {
                 format,
-                decoder: decoder.unwrap(),
+                decoder,
                 track_id,
                 meta,
+                supports_backseek,
             };
 
             out = LiveInput::Parsed(p);
@@ -95,6 +108,7 @@ impl LiveInput {
 
     /// Returns a reference to the data parsed from this input stream, if it has
     /// been made available via [`Self::promote`].
+    #[must_use]
     pub fn parsed(&self) -> Option<&Parsed> {
         if let Self::Parsed(parsed) = self {
             Some(parsed)
@@ -115,6 +129,7 @@ impl LiveInput {
 
     /// Returns whether this stream's headers have been fully parsed, and so whether
     /// the track can be played or have its metadata read.
+    #[must_use]
     pub fn is_playable(&self) -> bool {
         self.parsed().is_some()
     }

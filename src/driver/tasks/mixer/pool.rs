@@ -9,7 +9,6 @@ use flume::Sender;
 use parking_lot::RwLock;
 use std::{result::Result as StdResult, sync::Arc, time::Duration};
 use symphonia_core::{
-    errors::{Error as SymphoniaError, SeekErrorKind},
     formats::{SeekMode, SeekTo},
     io::MediaSource,
 };
@@ -74,7 +73,7 @@ impl BlockyTaskPool {
                 self.parse(config, callback, LiveInput::Raw(o), Some(rec), seek_time);
             },
             Err(e) => {
-                let _ = callback.send(MixerInputResultMessage::CreateErr(e));
+                drop(callback.send(MixerInputResultMessage::CreateErr(e)));
             },
         }
     }
@@ -96,11 +95,11 @@ impl BlockyTaskPool {
                     if let Some(seek_time) = seek_time {
                         pool_clone.seek(callback, parsed, rec, seek_time, false, config);
                     } else {
-                        let _ = callback.send(MixerInputResultMessage::Built(parsed, rec));
+                        drop(callback.send(MixerInputResultMessage::Built(parsed, rec)));
                     },
                 Ok(_) => unreachable!(),
                 Err(e) => {
-                    let _ = callback.send(MixerInputResultMessage::ParseErr(e));
+                    drop(callback.send(MixerInputResultMessage::ParseErr(e)));
                 },
             },
         );
@@ -112,31 +111,25 @@ impl BlockyTaskPool {
         mut input: Parsed,
         rec: Option<Box<dyn Compose>>,
         seek_time: SeekTo,
-        should_recreate: bool,
+        // Not all of symphonia's formats bother to return SeekErrorKind::ForwardOnly.
+        // So, we need *this* flag.
+        backseek_needed: bool,
         config: Arc<Config>,
     ) {
         let pool_clone = self.clone();
         let pool = self.pool.read();
 
-        pool.execute(move || {
-            let res = input
-                .format
-                .seek(SeekMode::Coarse, copy_seek_to(&seek_time));
-
-            let backseek_needed = matches!(
-                res,
-                Err(SymphoniaError::SeekError(SeekErrorKind::ForwardOnly))
-            );
-
-            match rec {
-                Some(rec) if should_recreate && backseek_needed => {
-                    pool_clone.create(callback, Input::Lazy(rec), Some(seek_time), config);
-                },
-                _ => {
-                    input.decoder.reset();
-                    let _ = callback.send(MixerInputResultMessage::Seek(input, rec, res));
-                },
-            }
+        pool.execute(move || match rec {
+            Some(rec) if (!input.supports_backseek) && backseek_needed => {
+                pool_clone.create(callback, Input::Lazy(rec), Some(seek_time), config);
+            },
+            _ => {
+                let seek_result = input
+                    .format
+                    .seek(SeekMode::Accurate, copy_seek_to(&seek_time));
+                input.decoder.reset();
+                drop(callback.send(MixerInputResultMessage::Seek(input, rec, seek_result)));
+            },
         });
     }
 }

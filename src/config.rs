@@ -1,6 +1,6 @@
 #[cfg(feature = "driver")]
-use super::{
-    driver::{retry::Retry, CryptoMode, DecodeMode, MixMode},
+use crate::{
+    driver::{retry::Retry, test_config::*, CryptoMode, DecodeMode, MixMode},
     input::codecs::*,
 };
 
@@ -108,6 +108,14 @@ pub struct Config {
     ///
     /// [`PROBE`]: static@PROBE
     pub format_registry: &'static Probe,
+
+    // Test only attributes
+    #[cfg(feature = "driver")]
+    /// Test config to offer precise control over mixing tick rate/count.
+    pub(crate) tick_style: TickStyle,
+    #[cfg(feature = "driver")]
+    /// If set, skip connection and encryption steps.
+    pub(crate) override_connection: Option<OutputMode>,
 }
 
 impl Default for Config {
@@ -124,13 +132,17 @@ impl Default for Config {
             #[cfg(feature = "driver")]
             preallocated_tracks: 1,
             #[cfg(feature = "driver")]
-            driver_retry: Default::default(),
+            driver_retry: Retry::default(),
             #[cfg(feature = "driver")]
             driver_timeout: Some(Duration::from_secs(10)),
             #[cfg(feature = "driver")]
             codec_registry: &CODEC_REGISTRY,
             #[cfg(feature = "driver")]
             format_registry: &PROBE,
+            #[cfg(feature = "driver")]
+            tick_style: TickStyle::Timed,
+            #[cfg(feature = "driver")]
+            override_connection: None,
         }
     }
 }
@@ -138,38 +150,58 @@ impl Default for Config {
 #[cfg(feature = "driver")]
 impl Config {
     /// Sets this `Config`'s chosen cryptographic tagging scheme.
+    #[must_use]
     pub fn crypto_mode(mut self, crypto_mode: CryptoMode) -> Self {
         self.crypto_mode = crypto_mode;
         self
     }
 
     /// Sets this `Config`'s received packet decryption/decoding behaviour.
+    #[must_use]
     pub fn decode_mode(mut self, decode_mode: DecodeMode) -> Self {
         self.decode_mode = decode_mode;
         self
     }
 
     /// Sets this `Config`'s audio mixing channel count.
+    #[must_use]
     pub fn mix_mode(mut self, mix_mode: MixMode) -> Self {
         self.mix_mode = mix_mode;
         self
     }
 
     /// Sets this `Config`'s number of tracks to preallocate.
+    #[must_use]
     pub fn preallocated_tracks(mut self, preallocated_tracks: usize) -> Self {
         self.preallocated_tracks = preallocated_tracks;
         self
     }
 
     /// Sets this `Config`'s timeout for establishing a voice connection.
+    #[must_use]
     pub fn driver_timeout(mut self, driver_timeout: Option<Duration>) -> Self {
         self.driver_timeout = driver_timeout;
         self
     }
 
     /// Sets this `Config`'s voice connection retry configuration.
+    #[must_use]
     pub fn driver_retry(mut self, driver_retry: Retry) -> Self {
         self.driver_retry = driver_retry;
+        self
+    }
+
+    /// Sets this `Config`'s symphonia codec registry.
+    #[must_use]
+    pub fn codec_registry(mut self, codec_registry: &'static CODEC_REGISTRY) -> Self {
+        self.codec_registry = codec_registry;
+        self
+    }
+
+    /// Sets this `Config`'s symphonia format registry/probe set.
+    #[must_use]
+    pub fn format_registry(mut self, format_registry: &'static PROBE) -> Self {
+        self.format_registry = format_registry;
         self
     }
 
@@ -181,9 +213,50 @@ impl Config {
     }
 }
 
+// Test only attributes
+#[cfg(all(test, feature = "driver"))]
+impl Config {
+    #![allow(missing_docs)]
+    #[must_use]
+    pub fn tick_style(mut self, tick_style: TickStyle) -> Self {
+        self.tick_style = tick_style;
+        self
+    }
+
+    /// Sets this `Config`'s voice connection retry configuration.
+    #[must_use]
+    pub fn override_connection(mut self, override_connection: Option<OutputMode>) -> Self {
+        self.override_connection = override_connection;
+        self
+    }
+
+    pub fn test_cfg(raw_output: bool) -> (DriverTestHandle, Config) {
+        let (tick_tx, tick_rx) = flume::unbounded();
+
+        let (conn, rx) = if raw_output {
+            let (pkt_tx, pkt_rx) = flume::unbounded();
+
+            (OutputMode::Raw(pkt_tx), OutputReceiver::Raw(pkt_rx))
+        } else {
+            let (rtp_tx, rtp_rx) = flume::unbounded();
+
+            (OutputMode::Rtp(rtp_tx), OutputReceiver::Rtp(rtp_rx))
+        };
+
+        let config = Config::default()
+            .tick_style(TickStyle::UntimedWithExecLimit(tick_rx))
+            .override_connection(Some(conn));
+
+        let handle = DriverTestHandle { rx, tx: tick_tx };
+
+        (handle, config)
+    }
+}
+
 #[cfg(feature = "gateway")]
 impl Config {
     /// Sets this `Config`'s timeout for joining a voice channel.
+    #[must_use]
     pub fn gateway_timeout(mut self, gateway_timeout: Option<Duration>) -> Self {
         self.gateway_timeout = gateway_timeout;
         self

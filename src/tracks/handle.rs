@@ -39,11 +39,11 @@ impl fmt::Debug for InnerHandle {
 }
 
 impl TrackHandle {
-    /// Creates a new handle, using the given command sink and hint as to whether
-    /// the underlying [`Input`] supports seek operations.
+    /// Creates a new handle, using the given command sink.
     ///
     /// [`Input`]: crate::input::Input
-    pub fn new(command_channel: Sender<TrackCommand>, uuid: Uuid) -> Self {
+    #[must_use]
+    pub(crate) fn new(command_channel: Sender<TrackCommand>, uuid: Uuid) -> Self {
         let inner = Arc::new(InnerHandle {
             command_channel,
             uuid,
@@ -164,17 +164,19 @@ impl TrackHandle {
     }
 
     /// Returns this handle's (and track's) unique identifier.
+    #[must_use]
     pub fn uuid(&self) -> Uuid {
         self.inner.uuid
     }
 
-    /// Allows access to this track's attached TypeMap.
+    /// Allows access to this track's attached [`TypeMap`].
     ///
-    /// TypeMaps allow additional, user-defined data shared by all handles
+    /// [`TypeMap`]s allow additional, user-defined data shared by all handles
     /// to be attached to any track.
     ///
     /// Driver code will never attempt to lock access to this map,
     /// preventing deadlock/stalling.
+    #[must_use]
     pub fn typemap(&self) -> &RwLock<TypeMap> {
         &self.inner.typemap
     }

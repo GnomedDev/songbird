@@ -1,3 +1,6 @@
+use crate::tracks::ReadyState;
+use symphonia_core::errors::Error as SymphError;
+
 use super::*;
 
 pub struct InternalTrack {
@@ -24,9 +27,9 @@ impl<'a> InternalTrack {
             playing: track.playing,
             volume: track.volume,
             input: InputState::from(track.input),
-            mix_state: Default::default(),
-            position: Default::default(),
-            play_time: Default::default(),
+            mix_state: DecodeState::default(),
+            position: Duration::default(),
+            play_time: Duration::default(),
             commands: receiver,
             loops: track.loops,
         };
@@ -37,12 +40,15 @@ impl<'a> InternalTrack {
     }
 
     pub(crate) fn state(&self) -> TrackState {
+        let ready = (&self.input).into();
+
         TrackState {
             playing: self.playing.clone(),
             volume: self.volume,
             position: self.position,
             play_time: self.play_time,
             loops: self.loops,
+            ready,
         }
     }
 
@@ -71,73 +77,61 @@ impl<'a> InternalTrack {
         // In correct operation, the event thread should never panic,
         // but it receiving status updates is secondary do actually
         // doing the work.
-        loop {
-            match self.commands.try_recv() {
-                Ok(cmd) => {
-                    use TrackCommand::*;
-                    match cmd {
-                        Play => {
-                            self.playing.change_to(PlayMode::Play);
-                            let _ = ic.events.send(EventMessage::ChangeState(
-                                index,
-                                TrackStateChange::Mode(self.playing.clone()),
-                            ));
-                        },
-                        Pause => {
-                            self.playing.change_to(PlayMode::Pause);
-                            let _ = ic.events.send(EventMessage::ChangeState(
-                                index,
-                                TrackStateChange::Mode(self.playing.clone()),
-                            ));
-                        },
-                        Stop => {
-                            self.playing.change_to(PlayMode::Stop);
-                            let _ = ic.events.send(EventMessage::ChangeState(
-                                index,
-                                TrackStateChange::Mode(self.playing.clone()),
-                            ));
-                        },
-                        Volume(vol) => {
-                            self.volume = vol;
-                            let _ = ic.events.send(EventMessage::ChangeState(
-                                index,
-                                TrackStateChange::Volume(self.volume),
-                            ));
-                        },
-                        Seek(time) => action.seek_point = Some(time),
-                        AddEvent(evt) => {
-                            let _ = ic.events.send(EventMessage::AddTrackEvent(index, evt));
-                        },
-                        Do(func) => {
-                            if let Some(indiv_action) = func(self.view()) {
-                                action.combine(indiv_action);
-                            }
-
-                            let _ = ic.events.send(EventMessage::ChangeState(
-                                index,
-                                TrackStateChange::Total(self.state()),
-                            ));
-                        },
-                        Request(tx) => {
-                            let _ = tx.send(self.state());
-                        },
-                        Loop(loops) => {
-                            self.loops = loops;
-                            let _ = ic.events.send(EventMessage::ChangeState(
-                                index,
-                                TrackStateChange::Loops(self.loops, true),
-                            ));
-                        },
-                        MakePlayable => action.make_playable = true,
+        while let Ok(cmd) = self.commands.try_recv() {
+            match cmd {
+                TrackCommand::Play => {
+                    self.playing.change_to(PlayMode::Play);
+                    drop(ic.events.send(EventMessage::ChangeState(
+                        index,
+                        TrackStateChange::Mode(self.playing.clone()),
+                    )));
+                },
+                TrackCommand::Pause => {
+                    self.playing.change_to(PlayMode::Pause);
+                    drop(ic.events.send(EventMessage::ChangeState(
+                        index,
+                        TrackStateChange::Mode(self.playing.clone()),
+                    )));
+                },
+                TrackCommand::Stop => {
+                    self.playing.change_to(PlayMode::Stop);
+                    drop(ic.events.send(EventMessage::ChangeState(
+                        index,
+                        TrackStateChange::Mode(self.playing.clone()),
+                    )));
+                },
+                TrackCommand::Volume(vol) => {
+                    self.volume = vol;
+                    drop(ic.events.send(EventMessage::ChangeState(
+                        index,
+                        TrackStateChange::Volume(self.volume),
+                    )));
+                },
+                TrackCommand::Seek(time) => action.seek_point = Some(time),
+                TrackCommand::AddEvent(evt) => {
+                    drop(ic.events.send(EventMessage::AddTrackEvent(index, evt)));
+                },
+                TrackCommand::Do(func) => {
+                    if let Some(indiv_action) = func(self.view()) {
+                        action.combine(indiv_action);
                     }
+
+                    drop(ic.events.send(EventMessage::ChangeState(
+                        index,
+                        TrackStateChange::Total(self.state()),
+                    )));
                 },
-                Err(TryRecvError::Disconnected) => {
-                    // this branch will never be visited.
-                    break;
+                TrackCommand::Request(tx) => {
+                    drop(tx.send(self.state()));
                 },
-                Err(TryRecvError::Empty) => {
-                    break;
+                TrackCommand::Loop(loops) => {
+                    self.loops = loops;
+                    drop(ic.events.send(EventMessage::ChangeState(
+                        index,
+                        TrackStateChange::Loops(self.loops, true),
+                    )));
                 },
+                TrackCommand::MakePlayable => action.make_playable = true,
             }
         }
 
@@ -178,8 +172,6 @@ impl<'a> InternalTrack {
         config: &Arc<Config>,
         prevent_events: bool,
     ) -> StdResult<(&'a mut Parsed, &'a mut DecodeState), InputReadyingError> {
-        use InputReadyingError::*;
-
         let input = &mut self.input;
         let local = &mut self.mix_state;
 
@@ -205,7 +197,14 @@ impl<'a> InternalTrack {
                     _ => unreachable!(),
                 }
 
-                Err(Waiting)
+                if !prevent_events {
+                    drop(interconnect.events.send(EventMessage::ChangeState(
+                        id,
+                        TrackStateChange::Ready(ReadyState::Preparing),
+                    )));
+                }
+
+                Err(InputReadyingError::Waiting)
             },
             InputState::Preparing(info) => {
                 let queued_seek = info.queued_seek.take();
@@ -215,6 +214,15 @@ impl<'a> InternalTrack {
                         *input = InputState::Ready(parsed, rec);
                         local.reset();
 
+                        // TODO: set position to the true track position here?
+
+                        if !prevent_events {
+                            drop(interconnect.events.send(EventMessage::ChangeState(
+                                id,
+                                TrackStateChange::Ready(ReadyState::Playable),
+                            )));
+                        }
+
                         if let InputState::Ready(ref mut parsed, _) = input {
                             Ok(parsed)
                         } else {
@@ -223,42 +231,47 @@ impl<'a> InternalTrack {
                     },
                     Ok(MixerInputResultMessage::Seek(parsed, rec, seek_res)) => {
                         match seek_res {
-                            Ok(pos) => {
-                                let time_base =
-                                    if let Some(tb) = parsed.decoder.codec_params().time_base {
-                                        tb
+                            Ok(pos) =>
+                                if let Some(time_base) = parsed.decoder.codec_params().time_base {
+                                    // modify track.
+                                    let new_time = time_base.calc_time(pos.actual_ts);
+                                    let time_in_float = new_time.seconds as f64 + new_time.frac;
+                                    self.position =
+                                        std::time::Duration::from_secs_f64(time_in_float);
+
+                                    if !prevent_events {
+                                        drop(interconnect.events.send(EventMessage::ChangeState(
+                                            id,
+                                            TrackStateChange::Position(self.position),
+                                        )));
+
+                                        drop(interconnect.events.send(EventMessage::ChangeState(
+                                            id,
+                                            TrackStateChange::Ready(ReadyState::Playable),
+                                        )));
+                                    }
+
+                                    local.reset();
+                                    *input = InputState::Ready(parsed, rec);
+
+                                    if let InputState::Ready(ref mut parsed, _) = input {
+                                        Ok(parsed)
                                     } else {
-                                        // Probably fire an Unsupported.
-                                        todo!()
-                                    };
-                                // modify track.
-                                let new_time = time_base.calc_time(pos.actual_ts);
-                                let time_in_float = new_time.seconds as f64 + new_time.frac;
-                                self.position = std::time::Duration::from_secs_f64(time_in_float);
-
-                                if !prevent_events {
-                                    let _ = interconnect.events.send(EventMessage::ChangeState(
-                                        id,
-                                        TrackStateChange::Position(self.position),
-                                    ));
-                                }
-
-                                local.reset();
-                                *input = InputState::Ready(parsed, rec);
-
-                                if let InputState::Ready(ref mut parsed, _) = input {
-                                    Ok(parsed)
+                                        unreachable!()
+                                    }
                                 } else {
-                                    unreachable!()
-                                }
-                            },
-                            Err(e) => Err(Seeking(e)),
+                                    Err(InputReadyingError::Seeking(SymphError::Unsupported(
+                                        "Track had no recorded time base.",
+                                    )))
+                                },
+                            Err(e) => Err(InputReadyingError::Seeking(e)),
                         }
                     },
-                    Err(TryRecvError::Empty) => Err(Waiting),
-                    Ok(MixerInputResultMessage::CreateErr(e)) => Err(Creation(e)),
-                    Ok(MixerInputResultMessage::ParseErr(e)) => Err(Parsing(e)),
-                    Err(TryRecvError::Disconnected) => Err(Dropped),
+                    Ok(MixerInputResultMessage::CreateErr(e)) =>
+                        Err(InputReadyingError::Creation(e)),
+                    Ok(MixerInputResultMessage::ParseErr(e)) => Err(InputReadyingError::Parsing(e)),
+                    Err(TryRecvError::Disconnected) => Err(InputReadyingError::Dropped),
+                    Err(TryRecvError::Empty) => Err(InputReadyingError::Waiting),
                 };
 
                 let orig_out = orig_out.map(|a| (a, &mut self.mix_state));

@@ -108,6 +108,7 @@ pub struct Track {
 
 impl Track {
     /// Create a new track directly from an [`Input`] and a random [`Uuid`].
+    #[must_use]
     pub fn new(input: Input) -> Self {
         let uuid = Uuid::new_v4();
 
@@ -115,9 +116,10 @@ impl Track {
     }
 
     /// Create a new track directly from an [`Input`] with a custom [`Uuid`].
+    #[must_use]
     pub fn new_with_uuid(input: Input, uuid: Uuid) -> Self {
         Self {
-            playing: Default::default(),
+            playing: PlayMode::default(),
             volume: 1.0,
             input,
             events: EventStore::new_local(),
@@ -190,8 +192,11 @@ impl Track {
     }
 }
 
-impl From<Input> for Track {
-    fn from(val: Input) -> Self {
-        Track::new(val)
+/// Any [`Input`] (or struct which can be used as one) can also be made into a [`Track`].
+impl<T: Into<Input>> From<T> for Track {
+    // NOTE: this is `Into` to support user-given structs which can
+    // only `impl Into<Input>`.
+    fn from(val: T) -> Self {
+        Track::new(val.into())
     }
 }

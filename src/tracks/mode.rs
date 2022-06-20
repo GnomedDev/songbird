@@ -31,14 +31,12 @@ impl PlayMode {
     }
 
     #[must_use]
-    pub(crate) fn next_state(self, other: Self) -> PlayMode {
-        use PlayMode::*;
-
+    pub(crate) fn next_state(self, other: Self) -> Self {
         // Idea: a finished track cannot be restarted -- this action is final.
         // We may want to change this in future so that seekable tracks can uncancel
         // themselves, perhaps, but this requires a bit more machinery to readd...
         match self {
-            Play | Pause => other,
+            Self::Play | Self::Pause => other,
             state => state,
         }
     }
@@ -49,12 +47,22 @@ impl PlayMode {
 
     #[must_use]
     pub(crate) fn as_track_event(&self) -> TrackEvent {
-        use PlayMode::*;
         match self {
-            Play => TrackEvent::Play,
-            Pause => TrackEvent::Pause,
-            Stop | End => TrackEvent::End,
-            Errored(_) => TrackEvent::Error,
+            Self::Play => TrackEvent::Play,
+            Self::Pause => TrackEvent::Pause,
+            Self::Stop | Self::End => TrackEvent::End,
+            Self::Errored(_) => TrackEvent::Error,
+        }
+    }
+
+    // The above COULD just return a Vec, but the below means we only allocate a Vec
+    // in the rare error case.
+    // Also, see discussion on bitsets in src/events/track.rs
+    #[must_use]
+    pub(crate) fn also_fired_track_events(&self) -> Option<Vec<TrackEvent>> {
+        match self {
+            Self::Errored(_) => Some(vec![TrackEvent::End]),
+            _ => None,
         }
     }
 }

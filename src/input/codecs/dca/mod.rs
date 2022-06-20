@@ -37,7 +37,7 @@ struct SeekAccel {
 }
 
 impl SeekAccel {
-    fn new(options: &FormatOptions, first_frame_byte_pos: u64) -> Self {
+    fn new(options: FormatOptions, first_frame_byte_pos: u64) -> Self {
         let per_s = options.seek_index_fill_rate;
         let next_ts = (per_s as u64) * (SAMPLE_RATE_RAW as u64);
 
@@ -61,7 +61,7 @@ impl SeekAccel {
     }
 }
 
-/// [DCA[0/1]](https://github.com/bwmarrin/dca) Format reader for Symphonia.
+/// [DCA\[0/1\]](https://github.com/bwmarrin/dca) Format reader for Symphonia.
 pub struct DcaReader {
     source: MediaSourceStream,
     track: Option<Track>,
@@ -176,7 +176,7 @@ impl FormatReader for DcaReader {
                 codec_params,
             }),
             metas,
-            seek_accel: SeekAccel::new(options, bytes_read),
+            seek_accel: SeekAccel::new(*options, bytes_read),
             curr_ts: 0,
             max_ts: None,
             held_packet: None,
@@ -306,5 +306,31 @@ impl FormatReader for DcaReader {
 
     fn into_inner(self: Box<Self>) -> MediaSourceStream {
         self.source
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::input::input_tests::*;
+    use crate::{constants::test_data::FILE_DCA_TARGET, input::File};
+
+    // NOTE: this covers youtube audio in a non-copyright-violating way, since
+    // those depend on an HttpRequest internally anyhow.
+    #[tokio::test]
+    #[ntest::timeout(10_000)]
+    async fn dca_track_plays() {
+        track_plays_passthrough(|| File::new(FILE_DCA_TARGET)).await;
+    }
+
+    #[tokio::test]
+    #[ntest::timeout(10_000)]
+    async fn dca_forward_seek_correct() {
+        forward_seek_correct(|| File::new(FILE_DCA_TARGET)).await;
+    }
+
+    #[tokio::test]
+    #[ntest::timeout(10_000)]
+    async fn dca_backward_seek_correct() {
+        backward_seek_correct(|| File::new(FILE_DCA_TARGET)).await;
     }
 }

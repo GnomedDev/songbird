@@ -17,12 +17,15 @@ mod decode_mode;
 mod mix_mode;
 pub mod retry;
 pub(crate) mod tasks;
+pub(crate) mod test_config;
 
 use connection::error::{Error, Result};
 pub use crypto::CryptoMode;
 pub(crate) use crypto::CryptoState;
 pub use decode_mode::DecodeMode;
 pub use mix_mode::MixMode;
+#[cfg(test)]
+pub use test_config::*;
 
 #[cfg(feature = "builtin-queue")]
 use crate::tracks::TrackQueue;
@@ -43,6 +46,8 @@ use core::{
     task::{Context, Poll},
 };
 use flume::{r#async::RecvFut, SendError, Sender};
+#[cfg(feature = "builtin-queue")]
+use std::time::Duration;
 use tasks::message::CoreMessage;
 use tracing::instrument;
 
@@ -56,8 +61,13 @@ pub struct Driver {
     config: Config,
     self_mute: bool,
     sender: Sender<CoreMessage>,
+    // Making this an Option is an abhorrent hack to coerce the borrow checker
+    // into letting us have an &TrackQueue at the same time as an &mut Driver.
+    // This is probably preferable to cloning the driver: Arc<...> should be nonzero
+    // and if the compiler's smart we'll just codegen a pointer swap. It definitely makes
+    // use of NonZero.
     #[cfg(feature = "builtin-queue")]
-    queue: TrackQueue,
+    queue: Option<TrackQueue>,
 }
 
 impl Driver {
@@ -65,6 +75,7 @@ impl Driver {
     ///
     /// This will create the core voice tasks in the background.
     #[inline]
+    #[must_use]
     pub fn new(config: Config) -> Self {
         let sender = Self::start_inner(config.clone());
 
@@ -73,7 +84,7 @@ impl Driver {
             self_mute: false,
             sender,
             #[cfg(feature = "builtin-queue")]
-            queue: Default::default(),
+            queue: Some(TrackQueue::default()),
         }
     }
 
@@ -188,20 +199,20 @@ impl Driver {
     /// Alternatively, `Auto` and `Max` remain available.
     #[instrument(skip(self))]
     pub fn set_bitrate(&mut self, bitrate: Bitrate) {
-        self.send(CoreMessage::SetBitrate(bitrate))
+        self.send(CoreMessage::SetBitrate(bitrate));
     }
 
     /// Stops playing audio from all sources, if any are set.
     #[instrument(skip(self))]
     pub fn stop(&mut self) {
-        self.send(CoreMessage::SetTrack(None))
+        self.send(CoreMessage::SetTrack(None));
     }
 
     /// Sets the configuration for this driver (and parent `Call`, if applicable).
     #[instrument(skip(self))]
     pub fn set_config(&mut self, config: Config) {
         self.config = config.clone();
-        self.send(CoreMessage::SetConfig(config))
+        self.send(CoreMessage::SetConfig(config));
     }
 
     /// Returns a view of this driver's configuration.
@@ -252,8 +263,11 @@ impl Driver {
     /// Requires the `"builtin-queue"` feature.
     /// Queue additions should be made via [`Driver::enqueue`] and
     /// [`Driver::enqueue_input`].
+    #[must_use]
     pub fn queue(&self) -> &TrackQueue {
-        &self.queue
+        self.queue
+            .as_ref()
+            .expect("Queue: The only case this can fail is if a previous queue operation panicked.")
     }
 
     /// Adds an audio [`Input`] to this driver's built-in queue.
@@ -268,14 +282,32 @@ impl Driver {
     /// Requires the `"builtin-queue"` feature.
     pub async fn enqueue(&mut self, mut track: Track) -> TrackHandle {
         let preload_time = TrackQueue::get_preload_time(&mut track).await;
-        let handle = self.play(track.pause());
-        self.queue.add_raw(handle, preload_time).await
+        self.enqueue_with_preload(track, preload_time)
+    }
+
+    /// Add an existing [`Track`] to the queue, using a known time to preload the next track.
+    ///
+    /// See [`TrackQueue::add_with_preload`] for how `preload_time` is used.
+    ///
+    /// Requires the `"builtin-queue"` feature.
+    pub fn enqueue_with_preload(
+        &mut self,
+        track: Track,
+        preload_time: Option<Duration>,
+    ) -> TrackHandle {
+        let queue = self.queue.take().expect(
+            "Enqueue: The only case this can fail is if a previous queue operation panicked.",
+        );
+        let handle = queue.add_with_preload(track, self, preload_time);
+        self.queue = Some(queue);
+
+        handle
     }
 }
 
 impl Default for Driver {
     fn default() -> Self {
-        Self::new(Default::default())
+        Self::new(Config::default())
     }
 }
 
@@ -283,7 +315,7 @@ impl Drop for Driver {
     /// Leaves the current connected voice channel, if connected to one, and
     /// forgets all configurations relevant to this Handler.
     fn drop(&mut self) {
-        let _ = self.sender.send(CoreMessage::Poison);
+        drop(self.sender.send(CoreMessage::Poison));
     }
 }
 
