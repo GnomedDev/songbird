@@ -359,7 +359,6 @@ impl TrackQueueCore {
 
 #[cfg(all(test, feature = "builtin-queue"))]
 mod tests {
-    use super::*;
     use crate::{
         driver::Driver,
         input::{File, HttpRequest},
