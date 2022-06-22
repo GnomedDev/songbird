@@ -33,7 +33,7 @@ use twilight_model::gateway::event::Event as TwilightEvent;
 
 #[derive(Clone, Copy, Debug)]
 struct ClientData {
-    shard_count: u64,
+    shard_count: u32,
     user_id: UserId,
 }
 
@@ -108,7 +108,7 @@ impl Songbird {
     {
         Self {
             client_data: PRwLock::new(Some(ClientData {
-                shard_count: cluster.config().shard_scheme().total(),
+                shard_count: cluster.config().shard_scheme().total() as u32,
                 user_id: user_id.into(),
             })),
             calls: DashMap::new(),
@@ -123,7 +123,7 @@ impl Songbird {
     /// or a previous call, then this function is a no-op.
     ///
     /// [`::twilight`]: #method.twilight
-    pub fn initialise_client_data<U: Into<UserId>>(&self, shard_count: u64, user_id: U) {
+    pub fn initialise_client_data<U: Into<UserId>>(&self, shard_count: u32, user_id: U) {
         let mut client_data = self.client_data.write();
 
         if client_data.is_some() {
@@ -395,7 +395,7 @@ impl Songbird {
 #[cfg(feature = "serenity")]
 #[async_trait]
 impl VoiceGatewayManager for Songbird {
-    async fn initialise(&self, shard_count: u64, user_id: SerenityUser) {
+    async fn initialise(&self, shard_count: u32, user_id: SerenityUser) {
         debug!(
             "Initialising Songbird for Serenity: ID {:?}, {} Shards",
             user_id, shard_count
@@ -404,7 +404,7 @@ impl VoiceGatewayManager for Songbird {
         debug!("Songbird ({:?}) Initialised!", user_id);
     }
 
-    async fn register_shard(&self, shard_id: u64, sender: Sender<InterMessage>) {
+    async fn register_shard(&self, shard_id: u32, sender: Sender<InterMessage>) {
         debug!(
             "Registering Serenity shard handle {} with Songbird",
             shard_id
@@ -413,7 +413,7 @@ impl VoiceGatewayManager for Songbird {
         debug!("Registered shard handle {}.", shard_id);
     }
 
-    async fn deregister_shard(&self, shard_id: u64) {
+    async fn deregister_shard(&self, shard_id: u32) {
         debug!(
             "Deregistering Serenity shard handle {} with Songbird",
             shard_id
@@ -448,6 +448,6 @@ impl VoiceGatewayManager for Songbird {
 }
 
 #[inline]
-fn shard_id(guild_id: u64, shard_count: u64) -> u64 {
-    (guild_id >> 22) % shard_count
+fn shard_id(guild_id: u64, shard_count: u32) -> u32 {
+    ((guild_id >> 22) % (shard_count as u64)) as u32
 }
