@@ -324,12 +324,6 @@ impl Mixer {
                 if let Some(ws) = &self.ws {
                     conn_failure |= ws.send(WsMessage::ReplaceInterconnect(i.clone())).is_err();
                 }
-                if let Some(conn) = &self.conn_active {
-                    conn_failure |= conn
-                        .udp_rx
-                        .send(UdpRxMessage::ReplaceInterconnect(i.clone()))
-                        .is_err();
-                }
 
                 self.interconnect = i;
 
@@ -357,18 +351,11 @@ impl Mixer {
                     );
                 }
 
-                self.config = Arc::new(new_config.clone());
+                self.config = Arc::new(new_config);
 
                 if self.tracks.capacity() < self.config.preallocated_tracks {
                     self.tracks
                         .reserve(self.config.preallocated_tracks - self.tracks.len());
-                }
-
-                if let Some(conn) = &self.conn_active {
-                    conn_failure |= conn
-                        .udp_rx
-                        .send(UdpRxMessage::SetConfig(new_config))
-                        .is_err();
                 }
 
                 Ok(())
@@ -782,30 +769,25 @@ impl Mixer {
         if let Some(OutputMode::Rtp(tx)) = &self.config.override_connection {
             // Test mode: send unencrypted (compressed) packets to local receiver.
             drop(tx.send(self.packet[..index].to_vec().into()));
-        } else {
-            conn.udp_tx
-                .send(UdpTxMessage::Packet(self.packet[..index].to_vec()))?;
+            self.length_check();
+            return Ok(())
         }
 
-        #[cfg(not(test))]
-        {
-            // Normal operation: send encrypted payload to UDP Tx task.
+        // Normal operation: send encrypted payload to Discord UDP Socket.
+        conn.udp_tx.send(&self.packet[..index])?;
 
-            // TODO: This is dog slow, don't do this.
-            // Can we replace this with a shared ring buffer + semaphore?
-            // or the BBQueue crate?
-            conn.udp_tx
-                .send(UdpTxMessage::Packet(self.packet[..index].to_vec()))?;
-        }
-
+        self.length_check();
+        Ok(())
+    }
+    
+    // TODO: come up with a better name
+    fn length_check(&mut self) {
         let mut rtp = MutableRtpPacket::new(&mut self.packet[..]).expect(
             "FATAL: Too few bytes in self.packet for RTP header.\
                 (Blame: VOICE_PACKET_MAX?)",
         );
         rtp.set_sequence(rtp.get_sequence() + 1);
         rtp.set_timestamp(rtp.get_timestamp() + MONO_FRAME_SIZE as u32);
-
-        Ok(())
     }
 
     #[inline]

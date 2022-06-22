@@ -5,8 +5,6 @@ pub mod error;
 mod events;
 pub mod message;
 pub mod mixer;
-pub(crate) mod udp_rx;
-pub(crate) mod udp_tx;
 pub(crate) mod ws;
 
 use std::time::Duration;

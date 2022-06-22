@@ -1,7 +1,7 @@
 pub mod error;
 
 use super::{
-    tasks::{message::*, udp_rx, udp_tx, ws as ws_task},
+    tasks::{message::*, ws as ws_task},
     Config,
     CryptoMode,
 };
@@ -18,7 +18,7 @@ use crate::{
 use discortp::discord::{IpDiscoveryPacket, IpDiscoveryType, MutableIpDiscoveryPacket};
 use error::{Error, Result};
 use flume::Sender;
-use std::{net::IpAddr, str::FromStr, sync::Arc};
+use std::{net::IpAddr, str::FromStr};
 use tokio::{net::UdpSocket, spawn, time::timeout};
 use tracing::{debug, info, instrument};
 use url::Url;
@@ -175,22 +175,13 @@ impl Connection {
         info!("WS heartbeat duration {}ms.", hello.heartbeat_interval,);
 
         let (ws_msg_tx, ws_msg_rx) = flume::unbounded();
-        let (udp_sender_msg_tx, udp_sender_msg_rx) = flume::unbounded();
-        let (udp_receiver_msg_tx, udp_receiver_msg_rx) = flume::unbounded();
-
-        let (udp_rx, udp_tx) = {
-            let udp_rx = Arc::new(udp);
-            let udp_tx = Arc::clone(&udp_rx);
-            (udp_rx, udp_tx)
-        };
 
         let ssrc = ready.ssrc;
 
         let mix_conn = MixerConnection {
-            cipher: cipher.clone(),
+            cipher,
+            udp_tx: udp.into_std()?,
             crypto_state: config.crypto_mode.into(),
-            udp_rx: udp_receiver_msg_tx,
-            udp_tx: udp_sender_msg_tx,
         };
 
         interconnect
@@ -210,15 +201,6 @@ impl Connection {
             idx,
             info.clone(),
         ));
-
-        spawn(udp_rx::runner(
-            interconnect.clone(),
-            udp_receiver_msg_rx,
-            cipher,
-            config.clone(),
-            udp_rx,
-        ));
-        spawn(udp_tx::runner(udp_sender_msg_rx, ssrc, udp_tx));
 
         Ok(Connection {
             info,

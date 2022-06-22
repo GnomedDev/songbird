@@ -1,6 +1,6 @@
 #![allow(missing_docs)]
 
-use super::{Interconnect, TrackContext, UdpRxMessage, UdpTxMessage, WsMessage};
+use super::{Interconnect, TrackContext, WsMessage};
 
 use crate::{
     driver::{Bitrate, Config, CryptoState},
@@ -13,15 +13,7 @@ use xsalsa20poly1305::XSalsa20Poly1305 as Cipher;
 pub struct MixerConnection {
     pub cipher: Cipher,
     pub crypto_state: CryptoState,
-    pub udp_rx: Sender<UdpRxMessage>,
-    pub udp_tx: Sender<UdpTxMessage>,
-}
-
-impl Drop for MixerConnection {
-    fn drop(&mut self) {
-        drop(self.udp_rx.send(UdpRxMessage::Poison));
-        drop(self.udp_tx.send(UdpTxMessage::Poison));
-    }
+    pub udp_tx: std::net::UdpSocket,
 }
 
 pub enum MixerMessage {

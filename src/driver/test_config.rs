@@ -196,6 +196,8 @@ impl DriverTestHandle {
         #[async_trait::async_trait]
         impl EventHandler for SongPlayable {
             async fn act(&self, ctx: &crate::EventContext<'_>) -> Option<Event> {
+                fn drop<T>(_: T) {}
+
                 if let EventContext::Track(&[(_, _)]) = ctx {
                     drop(self.tx.send(()));
                 }

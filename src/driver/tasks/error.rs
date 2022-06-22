@@ -20,8 +20,6 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[non_exhaustive]
 pub enum Error {
     Crypto(CryptoError),
-    /// Received an illegal voice packet on the voice UDP socket.
-    IllegalVoicePacket,
     InterconnectFailure(Recipient),
     Io(IoError),
     Opus(OpusError),
@@ -74,18 +72,6 @@ impl From<SendError<EventMessage>> for Error {
 impl From<SendError<MixerMessage>> for Error {
     fn from(_e: SendError<MixerMessage>) -> Error {
         Error::InterconnectFailure(Recipient::Mixer)
-    }
-}
-
-impl From<SendError<UdpRxMessage>> for Error {
-    fn from(_e: SendError<UdpRxMessage>) -> Error {
-        Error::InterconnectFailure(Recipient::UdpRx)
-    }
-}
-
-impl From<SendError<UdpTxMessage>> for Error {
-    fn from(_e: SendError<UdpTxMessage>) -> Error {
-        Error::InterconnectFailure(Recipient::UdpTx)
     }
 }
 
