@@ -35,6 +35,13 @@ impl Display for ChannelId {
         Display::fmt(&self.0, f)
     }
 }
+
+impl From<NonZeroU64> for ChannelId {
+    fn from(id: NonZeroU64) -> Self {
+        Self(id)
+    }
+}
+
 #[cfg(feature = "serenity")]
 impl From<SerenityChannel> for ChannelId {
     fn from(id: SerenityChannel) -> Self {
@@ -52,6 +59,12 @@ impl From<TwilightId<ChannelMarker>> for ChannelId {
 impl Display for GuildId {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         Display::fmt(&self.0, f)
+    }
+}
+
+impl From<NonZeroU64> for GuildId {
+    fn from(id: NonZeroU64) -> Self {
+        Self(id)
     }
 }
 
@@ -79,6 +92,12 @@ impl From<TwilightId<GuildMarker>> for GuildId {
 impl Display for UserId {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         Display::fmt(&self.0, f)
+    }
+}
+
+impl From<NonZeroU64> for UserId {
+    fn from(id: NonZeroU64) -> Self {
+        Self(id)
     }
 }
 
