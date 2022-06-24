@@ -9,10 +9,9 @@ use derivative::Derivative;
 use futures::channel::mpsc::{TrySendError, UnboundedSender as Sender};
 #[cfg(feature = "serenity")]
 use parking_lot::{lock_api::RwLockWriteGuard, Mutex as PMutex, RwLock as PRwLock};
-use serde_json::json;
 #[cfg(feature = "serenity")]
 use serenity::gateway::InterMessage;
-use std::sync::Arc;
+use std::{sync::Arc, num::NonZeroU64};
 #[cfg(feature = "serenity")]
 use std::result::Result as StdResult;
 use tracing::{debug, error};
@@ -146,17 +145,33 @@ impl VoiceUpdate for Shard {
         match self {
             #[cfg(feature = "serenity")]
             Shard::Serenity(handle) => {
-                let map = json!({
-                    "op": 4,
-                    "d": {
-                        "channel_id": channel_id.map(|c| c.0),
-                        "guild_id": guild_id.0,
-                        "self_deaf": self_deaf,
-                        "self_mute": self_mute,
-                    }
-                });
+                #[derive(serde::Serialize)]
+                struct VoiceStateUpdate {
+                    op: u8,
+                    d: VoiceStateUpdateData
+                }
 
-                handle.send(InterMessage::Json(map))?;
+                #[derive(serde::Serialize)]
+                struct VoiceStateUpdateData {
+                    channel_id: Option<NonZeroU64>,
+                    guild_id: NonZeroU64,
+                    self_deaf: bool,
+                    self_mute: bool,
+                }
+
+                let map = VoiceStateUpdate {
+                    op: 8,
+                    d: VoiceStateUpdateData {
+                        channel_id: channel_id.map(|i| i.0),
+                        guild_id: guild_id.0,
+                        self_deaf, self_mute
+                    }
+                };
+
+                if let Ok(serialized) = serde_json::to_string(&map) {
+                    handle.send(InterMessage::json(serialized))?;
+                }
+
                 Ok(())
             },
             #[cfg(feature = "twilight")]
