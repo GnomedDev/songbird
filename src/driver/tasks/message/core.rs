@@ -23,6 +23,7 @@ pub enum CoreMessage {
     Reconnect,
     FullReconnect,
     RebuildInterconnect,
+    Poison,
 }
 
 pub struct TrackContext {

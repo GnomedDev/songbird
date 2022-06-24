@@ -219,6 +219,7 @@ async fn runner(mut config: Config, rx: Receiver<CoreMessage>, tx: Sender<CoreMe
             CoreMessage::RebuildInterconnect => {
                 interconnect.restart_volatile_internals();
             },
+            CoreMessage::Poison => break,
         }
     }
 
