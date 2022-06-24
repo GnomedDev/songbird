@@ -1,6 +1,6 @@
 #[cfg(feature = "driver")]
 use crate::{
-    driver::{retry::Retry, CryptoMode, DecodeMode, MixMode},
+    driver::{retry::Retry, CryptoMode, MixMode},
     input::codecs::*,
 };
 
@@ -29,22 +29,6 @@ pub struct Config {
     ///
     /// [`CryptoMode::Normal`]: CryptoMode::Normal
     pub crypto_mode: CryptoMode,
-    #[cfg(feature = "driver")]
-    /// Configures whether decoding and decryption occur for all received packets.
-    ///
-    /// If voice receiving voice packets, generally you should choose [`DecodeMode::Decode`].
-    /// [`DecodeMode::Decrypt`] is intended for users running their own selective decoding,
-    /// who rely upon [user speaking events], or who need to inspect Opus packets.
-    /// If you're certain you will never need any RT(C)P events, then consider [`DecodeMode::Pass`].
-    ///
-    /// Defaults to [`DecodeMode::Decrypt`]. This is due to per-packet decoding costs,
-    /// which most users will not want to pay, but allowing speaking events which are commonly used.
-    ///
-    /// [`DecodeMode::Decode`]: DecodeMode::Decode
-    /// [`DecodeMode::Decrypt`]: DecodeMode::Decrypt
-    /// [`DecodeMode::Pass`]: DecodeMode::Pass
-    /// [user speaking events]: crate::events::CoreEvent::SpeakingUpdate
-    pub decode_mode: DecodeMode,
     #[cfg(feature = "gateway")]
     /// Configures the amount of time to wait for Discord to reply with connection information
     /// if [`Call::join`]/[`join_gateway`] are used.
@@ -128,8 +112,6 @@ impl Default for Config {
         Self {
             #[cfg(feature = "driver")]
             crypto_mode: CryptoMode::Normal,
-            #[cfg(feature = "driver")]
-            decode_mode: DecodeMode::Decrypt,
             #[cfg(feature = "gateway")]
             gateway_timeout: Some(Duration::from_secs(10)),
             #[cfg(feature = "driver")]
@@ -160,13 +142,6 @@ impl Config {
     #[must_use]
     pub fn crypto_mode(mut self, crypto_mode: CryptoMode) -> Self {
         self.crypto_mode = crypto_mode;
-        self
-    }
-
-    /// Sets this `Config`'s received packet decryption/decoding behaviour.
-    #[must_use]
-    pub fn decode_mode(mut self, decode_mode: DecodeMode) -> Self {
-        self.decode_mode = decode_mode;
         self
     }
 

@@ -13,7 +13,6 @@ pub mod bench_internals;
 
 pub(crate) mod connection;
 mod crypto;
-mod decode_mode;
 mod mix_mode;
 pub mod retry;
 pub(crate) mod tasks;
@@ -23,7 +22,6 @@ pub(crate) mod test_config;
 use connection::error::{Error, Result};
 pub use crypto::CryptoMode;
 pub(crate) use crypto::CryptoState;
-pub use decode_mode::DecodeMode;
 pub use mix_mode::MixMode;
 #[cfg(test)]
 pub use test_config::*;
