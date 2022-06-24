@@ -2,6 +2,8 @@
 
 use crate::{error::JoinResult, id::*};
 use async_trait::async_trait;
+#[cfg(feature = "serenity")]
+use dashmap::DashMap;
 use derivative::Derivative;
 #[cfg(feature = "serenity")]
 use futures::channel::mpsc::{TrySendError, UnboundedSender as Sender};
@@ -12,7 +14,7 @@ use serde_json::json;
 use serenity::gateway::InterMessage;
 use std::sync::Arc;
 #[cfg(feature = "serenity")]
-use std::{collections::HashMap, result::Result as StdResult};
+use std::result::Result as StdResult;
 use tracing::{debug, error};
 #[cfg(feature = "twilight")]
 use twilight_gateway::{Cluster, Shard as TwilightShard};
@@ -44,15 +46,16 @@ pub enum Sharder {
 #[async_trait]
 pub trait GenericSharder {
     /// Get access to a new shard
-    fn get_shard(&self, shard_id: u32) -> Option<Arc<dyn VoiceUpdate + Send + Sync>>;
+    fn get_shard(&self, shard_id: u64) -> Option<Arc<dyn VoiceUpdate + Send + Sync>>;
 }
 
 impl Sharder {
     /// Returns a new handle to the required inner shard.
-    pub fn get_shard(&self, shard_id: u32) -> Option<Shard> {
+    #[allow(clippy::must_use_candidate)] // get_or_insert_shard_handle has side effects
+    pub fn get_shard(&self, shard_id: u64) -> Option<Shard> {
         match self {
             #[cfg(feature = "serenity")]
-            Sharder::Serenity(s) => Some(Shard::Serenity(s.get_or_insert_shard_handle(shard_id))),
+            Sharder::Serenity(s) => Some(Shard::Serenity(s.get_or_insert_shard_handle(shard_id as u32))),
             #[cfg(feature = "twilight")]
             Sharder::TwilightCluster(t) => Some(Shard::TwilightCluster(t.clone(), shard_id)),
             #[cfg(feature = "twilight")]
@@ -89,19 +92,13 @@ impl Sharder {
 ///
 /// This is updated and maintained by the library, and is designed to prevent
 /// message loss during rebalances and reconnects.
-pub struct SerenitySharder(PRwLock<HashMap<u32, Arc<SerenityShardHandle>>>);
+pub struct SerenitySharder(DashMap<u32, Arc<SerenityShardHandle>>);
 
 #[cfg(feature = "serenity")]
 impl SerenitySharder {
     fn get_or_insert_shard_handle(&self, shard_id: u32) -> Arc<SerenityShardHandle> {
-        ({
-            let map_read = self.0.read();
-            map_read.get(&shard_id).cloned()
-        })
-        .unwrap_or_else(|| {
-            let mut map_read = self.0.write();
-            map_read.entry(shard_id).or_default().clone()
-        })
+        self.0.entry(shard_id).or_default().clone()
+
     }
 
     fn register_shard_handle(&self, shard_id: u32, sender: Sender<InterMessage>) {
@@ -129,7 +126,7 @@ pub enum Shard {
     Serenity(Arc<SerenityShardHandle>),
     #[cfg(feature = "twilight")]
     /// Handle to a twilight shard spawned from a cluster.
-    TwilightCluster(Arc<Cluster>, u32),
+    TwilightCluster(Arc<Cluster>, u64),
     #[cfg(feature = "twilight")]
     /// Handle to a twilight shard spawned from a cluster.
     TwilightShard(Arc<TwilightShard>),

@@ -13,6 +13,7 @@ use async_trait::async_trait;
 use dashmap::DashMap;
 #[cfg(feature = "serenity")]
 use futures::channel::mpsc::UnboundedSender as Sender;
+use once_cell::sync::OnceCell;
 use parking_lot::RwLock as PRwLock;
 #[cfg(feature = "serenity")]
 use serenity::{
@@ -33,7 +34,7 @@ use twilight_model::gateway::event::Event as TwilightEvent;
 
 #[derive(Clone, Copy, Debug)]
 struct ClientData {
-    shard_count: u32,
+    shard_count: u64,
     user_id: UserId,
 }
 
@@ -45,7 +46,7 @@ struct ClientData {
 /// [`Call`]: Call
 #[derive(Debug)]
 pub struct Songbird {
-    client_data: PRwLock<Option<ClientData>>,
+    client_data: OnceCell<ClientData>,
     calls: DashMap<GuildId, Arc<Mutex<Call>>>,
     sharder: Sharder,
     config: PRwLock<Option<Config>>,
@@ -72,7 +73,7 @@ impl Songbird {
     #[must_use]
     pub fn serenity_from_config(config: Config) -> Arc<Self> {
         Arc::new(Self {
-            client_data: PRwLock::new(None),
+            client_data: OnceCell::new(),
             calls: DashMap::new(),
             sharder: Sharder::Serenity(SerenitySharder::default()),
             config: Some(config).into(),
@@ -107,10 +108,10 @@ impl Songbird {
         U: Into<UserId>,
     {
         Self {
-            client_data: PRwLock::new(Some(ClientData {
-                shard_count: cluster.config().shard_scheme().total() as u32,
+            client_data: OnceCell::with_value(ClientData {
+                shard_count: cluster.config().shard_scheme().total(),
                 user_id: user_id.into(),
-            })),
+            }),
             calls: DashMap::new(),
             sharder: Sharder::TwilightCluster(cluster),
             config: Some(config).into(),
@@ -123,17 +124,13 @@ impl Songbird {
     /// or a previous call, then this function is a no-op.
     ///
     /// [`::twilight`]: #method.twilight
-    pub fn initialise_client_data<U: Into<UserId>>(&self, shard_count: u32, user_id: U) {
-        let mut client_data = self.client_data.write();
-
-        if client_data.is_some() {
-            return;
-        }
-
-        *client_data = Some(ClientData {
-            shard_count,
-            user_id: user_id.into(),
-        });
+    pub fn initialise_client_data<U: Into<UserId>>(&self, shard_count: u64, user_id: U) {
+        self.client_data
+            .set(ClientData {
+                shard_count,
+                user_id: user_id.into(),
+            })
+            .ok();
     }
 
     /// Retrieves a [`Call`] for the given guild, if one already exists.
@@ -166,7 +163,7 @@ impl Songbird {
                 .or_insert_with(|| {
                     let info = self
                         .client_data
-                        .read()
+                        .get()
                         .expect("Manager has not been initialised");
                     let shard = shard_id(guild_id.0.get(), info.shard_count);
                     let shard_handle = self
@@ -373,8 +370,7 @@ impl Songbird {
             TwilightEvent::VoiceStateUpdate(v) => {
                 if self
                     .client_data
-                    .read()
-                    .as_ref()
+                    .get()
                     .map_or(true, |data| v.0.user_id.into_nonzero() != data.user_id.0)
                 {
                     return;
@@ -400,7 +396,7 @@ impl VoiceGatewayManager for Songbird {
             "Initialising Songbird for Serenity: ID {:?}, {} Shards",
             user_id, shard_count
         );
-        self.initialise_client_data(shard_count, user_id);
+        self.initialise_client_data(shard_count as u64, user_id);
         debug!("Songbird ({:?}) Initialised!", user_id);
     }
 
@@ -434,7 +430,7 @@ impl VoiceGatewayManager for Songbird {
     async fn state_update(&self, guild_id: SerenityGuild, voice_state: &VoiceState) {
         if self
             .client_data
-            .read()
+            .get()
             .map_or(true, |data| voice_state.user_id.0 != data.user_id.0)
         {
             return;
@@ -448,6 +444,6 @@ impl VoiceGatewayManager for Songbird {
 }
 
 #[inline]
-fn shard_id(guild_id: u64, shard_count: u32) -> u32 {
-    ((guild_id >> 22) % (shard_count as u64)) as u32
+fn shard_id(guild_id: u64, shard_count: u64) -> u64 {
+    (guild_id >> 22) % shard_count
 }
