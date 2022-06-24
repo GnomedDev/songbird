@@ -36,9 +36,9 @@ impl Display for ChannelId {
     }
 }
 
-impl From<u64> for ChannelId {
-    fn from(id: u64) -> Self {
-        Self(NonZeroU64::new(id).expect("ID cannot be zero."))
+impl From<NonZeroU64> for ChannelId {
+    fn from(id: NonZeroU64) -> Self {
+        Self(id)
     }
 }
 
@@ -62,9 +62,9 @@ impl Display for GuildId {
     }
 }
 
-impl From<u64> for GuildId {
-    fn from(id: u64) -> Self {
-        Self(NonZeroU64::new(id).expect("ID cannot be zero."))
+impl From<NonZeroU64> for GuildId {
+    fn from(id: NonZeroU64) -> Self {
+        Self(id)
     }
 }
 
@@ -95,9 +95,9 @@ impl Display for UserId {
     }
 }
 
-impl From<u64> for UserId {
-    fn from(id: u64) -> Self {
-        Self(NonZeroU64::new(id).expect("ID cannot be zero."))
+impl From<NonZeroU64> for UserId {
+    fn from(id: NonZeroU64) -> Self {
+        Self(id)
     }
 }
 
