@@ -905,9 +905,5 @@ pub(crate) fn runner(
     async_handle: Handle,
     config: Config,
 ) {
-    let mut mixer = Mixer::new(mix_rx, async_handle, interconnect, config);
-
-    mixer.run();
-
-    drop(mixer.disposer.send(DisposalMessage::Poison));
+    Mixer::new(mix_rx, async_handle, interconnect, config).run();
 }
