@@ -160,7 +160,7 @@ impl VoiceUpdate for Shard {
                 }
 
                 let map = VoiceStateUpdate {
-                    op: 8,
+                    op: 4,
                     d: VoiceStateUpdateData {
                         channel_id: channel_id.map(|i| i.0),
                         guild_id: guild_id.0,
