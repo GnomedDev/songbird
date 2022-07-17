@@ -11,9 +11,9 @@ use futures::channel::mpsc::{TrySendError, UnboundedSender as Sender};
 use parking_lot::{lock_api::RwLockWriteGuard, Mutex as PMutex, RwLock as PRwLock};
 #[cfg(feature = "serenity")]
 use serenity::gateway::InterMessage;
-use std::{sync::Arc, num::NonZeroU64};
 #[cfg(feature = "serenity")]
 use std::result::Result as StdResult;
+use std::{num::NonZeroU64, sync::Arc};
 use tracing::{debug, error};
 #[cfg(feature = "twilight")]
 use twilight_gateway::{Cluster, Shard as TwilightShard};
@@ -54,7 +54,9 @@ impl Sharder {
     pub fn get_shard(&self, shard_id: u64) -> Option<Shard> {
         match self {
             #[cfg(feature = "serenity")]
-            Sharder::Serenity(s) => Some(Shard::Serenity(s.get_or_insert_shard_handle(shard_id as u32))),
+            Sharder::Serenity(s) => Some(Shard::Serenity(
+                s.get_or_insert_shard_handle(shard_id as u32),
+            )),
             #[cfg(feature = "twilight")]
             Sharder::TwilightCluster(t) => Some(Shard::TwilightCluster(t.clone(), shard_id)),
             #[cfg(feature = "twilight")]
@@ -97,7 +99,6 @@ pub struct SerenitySharder(DashMap<u32, Arc<SerenityShardHandle>>);
 impl SerenitySharder {
     fn get_or_insert_shard_handle(&self, shard_id: u32) -> Arc<SerenityShardHandle> {
         self.0.entry(shard_id).or_default().clone()
-
     }
 
     fn register_shard_handle(&self, shard_id: u32, sender: Sender<InterMessage>) {
@@ -148,7 +149,7 @@ impl VoiceUpdate for Shard {
                 #[derive(serde::Serialize)]
                 struct VoiceStateUpdate {
                     op: u8,
-                    d: VoiceStateUpdateData
+                    d: VoiceStateUpdateData,
                 }
 
                 #[derive(serde::Serialize)]
@@ -164,12 +165,13 @@ impl VoiceUpdate for Shard {
                     d: VoiceStateUpdateData {
                         channel_id: channel_id.map(|i| i.0),
                         guild_id: guild_id.0,
-                        self_deaf, self_mute
-                    }
+                        self_deaf,
+                        self_mute,
+                    },
                 };
 
-                if let Ok(serialized) = serde_json::to_string(&map) {
-                    handle.send(InterMessage::json(serialized))?;
+                if let Ok(msg) = serde_json::to_string(&map) {
+                    handle.send(InterMessage::json(msg))?;
                 }
 
                 Ok(())

@@ -1,4 +1,5 @@
-use crate::tracks::ReadyState;
+use crate::tracks::{ReadyState, SeekRequest};
+use std::result::Result as StdResult;
 use symphonia_core::errors::Error as SymphError;
 
 use super::*;
@@ -12,6 +13,7 @@ pub struct InternalTrack {
     pub(crate) play_time: Duration,
     pub(crate) commands: Receiver<TrackCommand>,
     pub(crate) loops: LoopState,
+    pub(crate) callbacks: Callbacks,
 }
 
 impl<'a> InternalTrack {
@@ -32,6 +34,7 @@ impl<'a> InternalTrack {
             play_time: Duration::default(),
             commands: receiver,
             loops: track.loops,
+            callbacks: Callbacks::default(),
         };
 
         let state = out.state();
@@ -40,7 +43,7 @@ impl<'a> InternalTrack {
     }
 
     pub(crate) fn state(&self) -> TrackState {
-        let ready = (&self.input).into();
+        let ready = self.input.ready_state();
 
         TrackState {
             playing: self.playing.clone(),
@@ -53,7 +56,7 @@ impl<'a> InternalTrack {
     }
 
     pub(crate) fn view(&'a mut self) -> View<'a> {
-        let ready = (&self.input).into();
+        let ready = self.input.ready_state();
 
         View {
             position: &self.position,
@@ -107,7 +110,7 @@ impl<'a> InternalTrack {
                         TrackStateChange::Volume(self.volume),
                     )));
                 },
-                TrackCommand::Seek(time) => action.seek_point = Some(time),
+                TrackCommand::Seek(req) => action.seek_point = Some(req),
                 TrackCommand::AddEvent(evt) => {
                     drop(ic.events.send(EventMessage::AddTrackEvent(index, evt)));
                 },
@@ -131,7 +134,7 @@ impl<'a> InternalTrack {
                         TrackStateChange::Loops(self.loops, true),
                     )));
                 },
-                TrackCommand::MakePlayable => action.make_playable = true,
+                TrackCommand::MakePlayable(callback) => action.make_playable = Some(callback),
             }
         }
 
@@ -155,6 +158,10 @@ impl<'a> InternalTrack {
         self.play_time += TIMESTEP_LENGTH;
     }
 
+    pub(crate) fn should_check_input(&self) -> bool {
+        self.playing.is_playing() || matches!(self.input, InputState::Preparing(_))
+    }
+
     pub(crate) fn end(&mut self) -> &mut Self {
         self.playing.change_to(PlayMode::End);
 
@@ -173,9 +180,9 @@ impl<'a> InternalTrack {
         prevent_events: bool,
     ) -> StdResult<(&'a mut Parsed, &'a mut DecodeState), InputReadyingError> {
         let input = &mut self.input;
-        let local = &mut self.mix_state;
+        let mix_state = &mut self.mix_state;
 
-        match input {
+        let (out, queued_seek) = match input {
             InputState::NotReady(_) => {
                 let (tx, rx) = flume::bounded(1);
 
@@ -204,7 +211,7 @@ impl<'a> InternalTrack {
                     )));
                 }
 
-                Err(InputReadyingError::Waiting)
+                (Err(InputReadyingError::Waiting), None)
             },
             InputState::Preparing(info) => {
                 let queued_seek = info.queued_seek.take();
@@ -212,9 +219,11 @@ impl<'a> InternalTrack {
                 let orig_out = match info.callback.try_recv() {
                     Ok(MixerInputResultMessage::Built(parsed, rec)) => {
                         *input = InputState::Ready(parsed, rec);
-                        local.reset();
+                        mix_state.reset();
 
-                        // TODO: set position to the true track position here?
+                        // possible TODO: set position to the true track position here?
+                        // ISSUE: need to get next_packet to see its `ts`, but inner_pos==0
+                        // will trigger next packet to be taken at mix time.
 
                         if !prevent_events {
                             drop(interconnect.events.send(EventMessage::ChangeState(
@@ -222,6 +231,8 @@ impl<'a> InternalTrack {
                                 TrackStateChange::Ready(ReadyState::Playable),
                             )));
                         }
+
+                        self.callbacks.playable();
 
                         if let InputState::Ready(ref mut parsed, _) = input {
                             Ok(parsed)
@@ -233,11 +244,15 @@ impl<'a> InternalTrack {
                         match seek_res {
                             Ok(pos) =>
                                 if let Some(time_base) = parsed.decoder.codec_params().time_base {
-                                    // modify track.
+                                    // Update track's position to match the actual timestamp the
+                                    // seek landed at.
                                     let new_time = time_base.calc_time(pos.actual_ts);
                                     let time_in_float = new_time.seconds as f64 + new_time.frac;
                                     self.position =
                                         std::time::Duration::from_secs_f64(time_in_float);
+
+                                    self.callbacks.seeked(self.position);
+                                    self.callbacks.playable();
 
                                     if !prevent_events {
                                         drop(interconnect.events.send(EventMessage::ChangeState(
@@ -251,7 +266,10 @@ impl<'a> InternalTrack {
                                         )));
                                     }
 
-                                    local.reset();
+                                    // Our decoder state etc. must be reset.
+                                    // (Symphonia decoder state reset in the thread pool during
+                                    // the operation.)
+                                    mix_state.reset();
                                     *input = InputState::Ready(parsed, rec);
 
                                     if let InputState::Ready(ref mut parsed, _) = input {
@@ -260,9 +278,10 @@ impl<'a> InternalTrack {
                                         unreachable!()
                                     }
                                 } else {
-                                    Err(InputReadyingError::Seeking(SymphError::Unsupported(
-                                        "Track had no recorded time base.",
-                                    )))
+                                    Err(InputReadyingError::Seeking(
+                                        SymphError::Unsupported("Track had no recorded time base.")
+                                            .into(),
+                                    ))
                                 },
                             Err(e) => Err(InputReadyingError::Seeking(e)),
                         }
@@ -274,17 +293,108 @@ impl<'a> InternalTrack {
                     Err(TryRecvError::Empty) => Err(InputReadyingError::Waiting),
                 };
 
-                let orig_out = orig_out.map(|a| (a, &mut self.mix_state));
+                let orig_out = orig_out.map(|a| (a, mix_state));
 
-                match (orig_out, queued_seek) {
-                    (Ok(v), Some(_time)) => {
-                        warn!("Track was given seek command while busy: handling not impl'd yet.");
-                        Ok(v)
-                    },
-                    (a, _) => a,
+                if let Err(ref e) = orig_out {
+                    if let Some(e) = e.as_user() {
+                        self.callbacks.readying_error(e);
+                    }
                 }
+
+                (orig_out, queued_seek)
             },
-            InputState::Ready(parsed, _) => Ok((parsed, &mut self.mix_state)),
+            InputState::Ready(ref mut parsed, _) => (Ok((parsed, mix_state)), None),
+        };
+
+        match (out, queued_seek) {
+            (Ok(_), Some(request)) => Err(InputReadyingError::NeedsSeek(request)),
+            (a, _) => a,
+        }
+    }
+
+    pub(crate) fn seek(
+        &mut self,
+        id: usize,
+        request: SeekRequest,
+        interconnect: &Interconnect,
+        pool: &BlockyTaskPool,
+        config: &Arc<Config>,
+        prevent_events: bool,
+    ) {
+        if let InputState::Preparing(p) = &mut self.input {
+            p.queued_seek = Some(request);
+            return;
+        }
+
+        // might be a little topsy turvy: rethink me.
+        let SeekRequest { time, callback } = request;
+
+        self.callbacks.seek = Some(callback);
+        if !prevent_events {
+            drop(interconnect.events.send(EventMessage::ChangeState(
+                id,
+                TrackStateChange::Ready(ReadyState::Preparing),
+            )));
+        }
+
+        let backseek_needed = time < self.position;
+
+        let time = Time::from(time.as_secs_f64());
+        let mut ts = SeekTo::Time {
+            time,
+            track_id: None,
+        };
+        let (tx, rx) = flume::bounded(1);
+
+        let state = std::mem::replace(
+            &mut self.input,
+            InputState::Preparing(PreparingInfo {
+                time: Instant::now(),
+                callback: rx,
+                queued_seek: None,
+            }),
+        );
+
+        match state {
+            InputState::Ready(p, r) => {
+                if let SeekTo::Time { time: _, track_id } = &mut ts {
+                    *track_id = Some(p.track_id);
+                }
+
+                pool.seek(tx, p, r, ts, backseek_needed, config.clone());
+            },
+            InputState::NotReady(lazy) => pool.create(tx, lazy, Some(ts), config.clone()),
+            InputState::Preparing(_) => unreachable!(), // Covered above.
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct Callbacks {
+    pub seek: Option<Sender<StdResult<Duration, PlayError>>>,
+    pub make_playable: Option<Sender<StdResult<(), PlayError>>>,
+}
+
+impl Callbacks {
+    fn readying_error(&mut self, err: PlayError) {
+        if let Some(callback) = self.seek.take() {
+            drop(callback.send(Err(err.clone())));
+        }
+
+        if let Some(callback) = self.make_playable.take() {
+            drop(callback.send(Err(err)));
+        }
+    }
+
+    fn playable(&mut self) {
+        if let Some(callback) = self.make_playable.take() {
+            drop(callback.send(Ok(())));
+        }
+    }
+
+    fn seeked(&mut self, time: Duration) {
+        if let Some(callback) = self.seek.take() {
+            drop(callback.send(Ok(time)));
         }
     }
 }

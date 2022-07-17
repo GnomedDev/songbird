@@ -39,6 +39,10 @@ impl BlockyTaskPool {
         seek_time: Option<SeekTo>,
         config: Arc<Config>,
     ) {
+        // Moves an Input from Lazy -> Live.
+        // We either do this on this pool, or move it to the tokio executor as the source requires.
+        // This takes a seek_time to pass on and execute *after* parsing (i.e., back-seek on
+        // read-only stream).
         match input {
             Input::Lazy(mut lazy) => {
                 let far_pool = self.clone();
@@ -73,7 +77,7 @@ impl BlockyTaskPool {
                 self.parse(config, callback, LiveInput::Raw(o), Some(rec), seek_time);
             },
             Err(e) => {
-                drop(callback.send(MixerInputResultMessage::CreateErr(e)));
+                drop(callback.send(MixerInputResultMessage::CreateErr(e.into())));
             },
         }
     }
@@ -91,15 +95,20 @@ impl BlockyTaskPool {
 
         pool.execute(
             move || match input.promote(config.codec_registry, config.format_registry) {
-                Ok(LiveInput::Parsed(parsed)) =>
-                    if let Some(seek_time) = seek_time {
+                Ok(LiveInput::Parsed(parsed)) => match seek_time {
+                    // If seek time is zero, then wipe it out.
+                    // Some formats (MKV) make SeekTo(0) require a backseek to realign with the
+                    // current page.
+                    Some(seek_time) if !super::util::seek_to_is_zero(&seek_time) => {
                         pool_clone.seek(callback, parsed, rec, seek_time, false, config);
-                    } else {
+                    },
+                    _ => {
                         drop(callback.send(MixerInputResultMessage::Built(parsed, rec)));
                     },
+                },
                 Ok(_) => unreachable!(),
                 Err(e) => {
-                    drop(callback.send(MixerInputResultMessage::ParseErr(e)));
+                    drop(callback.send(MixerInputResultMessage::ParseErr(e.into())));
                 },
             },
         );
@@ -128,7 +137,11 @@ impl BlockyTaskPool {
                     .format
                     .seek(SeekMode::Accurate, copy_seek_to(&seek_time));
                 input.decoder.reset();
-                drop(callback.send(MixerInputResultMessage::Seek(input, rec, seek_result)));
+                drop(callback.send(MixerInputResultMessage::Seek(
+                    input,
+                    rec,
+                    seek_result.map_err(Arc::new),
+                )));
             },
         });
     }

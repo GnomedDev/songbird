@@ -1,6 +1,6 @@
 use super::*;
 use crate::events::{Event, EventData, EventHandler};
-use flume::Sender;
+use flume::{Receiver, Sender};
 use std::{fmt, sync::Arc, time::Duration};
 use tokio::sync::RwLock;
 use typemap_rev::TypeMap;
@@ -78,21 +78,53 @@ impl TrackHandle {
         self.send(TrackCommand::Volume(volume))
     }
 
+    #[must_use]
     /// Ready a track for playing if it is lazily initialised.
-    pub fn make_playable(&self) -> TrackResult<()> {
-        self.send(TrackCommand::MakePlayable)
+    ///
+    /// If a track is already playable, the callback will instantly succeed.
+    pub fn make_playable(&self) -> TrackCallback<()> {
+        let (tx, rx) = flume::bounded(1);
+        let fail = self.send(TrackCommand::MakePlayable(tx)).is_err();
+
+        TrackCallback { fail, rx }
     }
 
+    /// Ready a track for playing if it is lazily initialised.
+    ///
+    /// This folds [`Self::make_playable`] into a single `async` result, but must
+    /// be awaited for the command to be sent.
+    pub async fn make_playable_async(&self) -> TrackResult<()> {
+        self.make_playable().result_async().await
+    }
+
+    #[must_use]
     /// Seeks along the track to the specified position.
     ///
     /// If the underlying [`Input`] does not support seeking,
     /// forward seeks will succeed. Backward seeks will recreate the
-    /// track using the lazy [`Compose`] if present.
+    /// track using the lazy [`Compose`] if present. The returned callback
+    /// will indicate whether the seek succeeded.
     ///
     /// [`Input`]: crate::input::Input
     /// [`Compose`]: crate::input::Compose
-    pub fn seek_time(&self, position: Duration) -> TrackResult<()> {
-        self.send(TrackCommand::Seek(position))
+    pub fn seek(&self, position: Duration) -> TrackCallback<Duration> {
+        let (tx, rx) = flume::bounded(1);
+        let fail = self
+            .send(TrackCommand::Seek(SeekRequest {
+                time: position,
+                callback: tx,
+            }))
+            .is_err();
+
+        TrackCallback { fail, rx }
+    }
+
+    /// Seeks along the track to the specified position.
+    ///
+    /// This folds [`Self::seek`] into a single `async` result, but must
+    /// be awaited for the command to be sent.
+    pub async fn seek_async(&self, position: Duration) -> TrackResult<Duration> {
+        self.seek(position).result_async().await
     }
 
     /// Attach an event handler to an audio track. These will receive [`EventContext::Track`].
@@ -185,12 +217,95 @@ impl TrackHandle {
     /// Send a raw command to the [`Track`] object.
     ///
     /// [`Track`]: Track
-    pub fn send(&self, cmd: TrackCommand) -> TrackResult<()> {
+    pub(crate) fn send(&self, cmd: TrackCommand) -> TrackResult<()> {
         // As the send channels are unbounded, we can be reasonably certain
         // that send failure == cancellation.
         self.inner
             .command_channel
             .send(cmd)
             .map_err(|_e| ControlError::Finished)
+    }
+}
+
+/// Asynchronous reply for an operation applied to a [`TrackHandle`].
+///
+/// This object does not need to be `.await`ed for the driver to perform an action.
+/// Async threads can then call, e.g., [`TrackHandle::make_playable`], and safely drop
+/// this callback if the result isn't needed.
+pub struct TrackCallback<T> {
+    fail: bool,
+    rx: Receiver<Result<T, PlayError>>,
+}
+
+impl<T> TrackCallback<T> {
+    /// Consumes this handle to await a reply from the driver, blocking the current thread.
+    pub fn result(self) -> TrackResult<T> {
+        if self.fail {
+            Err(ControlError::Finished)
+        } else {
+            self.rx.recv()?.map_err(ControlError::Play)
+        }
+    }
+
+    /// Consumes this handle to await a reply from the driver asynchronously.
+    pub async fn result_async(self) -> TrackResult<T> {
+        if self.fail {
+            Err(ControlError::Finished)
+        } else {
+            self.rx.recv_async().await?.map_err(ControlError::Play)
+        }
+    }
+
+    #[must_use]
+    /// Returns `true` if the operation instantly failed due to the target track being
+    /// removed.
+    pub fn is_hung_up(&self) -> bool {
+        self.fail
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        constants::test_data::FILE_WAV_TARGET,
+        driver::Driver,
+        input::File,
+        tracks::Track,
+        Config,
+    };
+
+    #[tokio::test]
+    #[ntest::timeout(10_000)]
+    async fn make_playable_callback_fires() {
+        let (t_handle, config) = Config::test_cfg(true);
+        let mut driver = Driver::new(config.clone());
+
+        let file = File::new(FILE_WAV_TARGET);
+        let handle = driver.play(Track::from(file).pause());
+
+        let callback = handle.make_playable();
+        t_handle.spawn_ticker().await;
+        assert!(callback.result_async().await.is_ok());
+    }
+
+    #[tokio::test]
+    #[ntest::timeout(10_000)]
+    async fn seek_callback_fires() {
+        let (t_handle, config) = Config::test_cfg(true);
+        let mut driver = Driver::new(config.clone());
+
+        let file = File::new(FILE_WAV_TARGET);
+        let handle = driver.play(Track::from(file).pause());
+
+        let target = Duration::from_millis(500);
+        let callback = handle.seek(target);
+        t_handle.spawn_ticker().await;
+
+        let answer = callback.result_async().await;
+        assert!(answer.is_ok());
+        let answer = answer.unwrap();
+        let delta = Duration::from_millis(100);
+        assert!(answer > target - delta && answer < target + delta);
     }
 }

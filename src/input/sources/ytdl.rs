@@ -1,10 +1,17 @@
-use crate::input::{AudioStream, AudioStreamError, AuxMetadata, Compose, HttpRequest, Input};
+use crate::input::{
+    metadata::ytdl::Output,
+    AudioStream,
+    AudioStreamError,
+    AuxMetadata,
+    Compose,
+    HttpRequest,
+    Input,
+};
 use async_trait::async_trait;
 use reqwest::{
-    header::{HeaderMap, HeaderName, HeaderValue, RANGE},
+    header::{HeaderMap, HeaderName, HeaderValue},
     Client,
 };
-use serde_json::Value;
 use std::error::Error;
 use symphonia_core::io::MediaSource;
 use tokio::process::Command;
@@ -49,7 +56,7 @@ impl YoutubeDl {
         }
     }
 
-    async fn query(&mut self) -> Result<Value, AudioStreamError> {
+    async fn query(&mut self) -> Result<Output, AudioStreamError> {
         let ytdl_args = ["-j", &self.url, "-f", "ba[abr>0][vcodec=none]/best"];
 
         let output = Command::new(self.program)
@@ -58,11 +65,10 @@ impl YoutubeDl {
             .await
             .map_err(|e| AudioStreamError::Fail(Box::new(e)))?;
 
-        let stdout: Value = serde_json::from_slice(&output.stdout[..])
+        let stdout: Output = serde_json::from_slice(&output.stdout[..])
             .map_err(|e| AudioStreamError::Fail(Box::new(e)))?;
 
-        let metadata = Some(AuxMetadata::from_ytdl_output(&stdout));
-        self.metadata = metadata;
+        self.metadata = Some(stdout.as_aux_metadata());
 
         Ok(stdout)
     }
@@ -85,52 +91,22 @@ impl Compose for YoutubeDl {
     ) -> Result<AudioStream<Box<dyn MediaSource>>, AudioStreamError> {
         let stdout = self.query().await?;
 
-        // TODO: refactor as actual structs.
-
-        let url = stdout
-            .as_object()
-            .and_then(|top| top.get("url"))
-            .and_then(Value::as_str)
-            .ok_or_else(|| {
-                let msg: Box<dyn Error + Send + Sync + 'static> =
-                    "URL field not found on youtube-dl output.".into();
-                AudioStreamError::Fail(msg)
-            })?;
-
         let mut headers = HeaderMap::default();
 
-        if let Some(map) = stdout
-            .as_object()
-            .and_then(|top| top.get("http_headers"))
-            .and_then(Value::as_object)
-        {
+        if let Some(map) = stdout.http_headers {
             headers.extend(map.iter().filter_map(|(k, v)| {
-                let k = HeaderName::from_bytes(k.as_bytes()).ok()?;
-                v.as_str()
-                    .and_then(|v| HeaderValue::from_str(v).ok())
-                    .map(move |v| (k, v))
+                Some((
+                    HeaderName::from_bytes(k.as_bytes()).ok()?,
+                    HeaderValue::from_str(v).ok()?,
+                ))
             }));
         }
 
-        let content_length = stdout
-            .as_object()
-            .and_then(|top| top.get("filesize"))
-            .and_then(Value::as_u64);
-
-        if let Some(len) = content_length {
-            headers.append(RANGE, HeaderValue::from_str(format!("bytes=0-{}", len).as_str()).expect("This header value is known to be well-formed unless the filesize is monstrously huge."));
-        }
-
-        headers.append(
-            HeaderName::from_static("sec-fetch-mode"),
-            HeaderValue::from_static("navigate"),
-        );
-
         let mut req = HttpRequest {
             client: self.client.clone(),
-            request: url.to_string(),
+            request: stdout.url,
             headers,
-            content_length,
+            content_length: stdout.filesize,
         };
 
         req.create_async().await
@@ -163,19 +139,19 @@ mod tests {
     use crate::{constants::test_data::YTDL_TARGET, input::input_tests::*};
 
     #[tokio::test]
-    #[ntest::timeout(10_000)]
+    #[ntest::timeout(20_000)]
     async fn ytdl_track_plays() {
         track_plays_mixed(|| YoutubeDl::new(Client::new(), YTDL_TARGET.into())).await;
     }
 
     #[tokio::test]
-    #[ntest::timeout(10_000)]
+    #[ntest::timeout(20_000)]
     async fn ytdl_forward_seek_correct() {
         forward_seek_correct(|| YoutubeDl::new(Client::new(), YTDL_TARGET.into())).await;
     }
 
     #[tokio::test]
-    #[ntest::timeout(10_000)]
+    #[ntest::timeout(20_000)]
     async fn ytdl_backward_seek_correct() {
         backward_seek_correct(|| YoutubeDl::new(Client::new(), YTDL_TARGET.into())).await;
     }

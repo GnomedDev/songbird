@@ -147,7 +147,9 @@ impl EventHandler for SongPreloader {
         let inner = self.remote_lock.lock();
 
         if let Some(track) = inner.tracks.get(1) {
-            let _ = track.0.make_playable();
+            // This is the sync-version so that we can fire and ignore
+            // the request ASAP.
+            drop(track.0.make_playable());
         }
 
         None
@@ -246,7 +248,7 @@ impl TrackQueue {
         };
 
         if should_play {
-            let _ = handle.play();
+            drop(handle.play());
         }
 
         handle
@@ -327,7 +329,7 @@ impl TrackQueue {
         for track in inner.tracks.drain(..) {
             // Errors when removing tracks don't really make
             // a difference: an error just implies it's already gone.
-            let _ = track.stop();
+            drop(track.stop());
         }
     }
 
@@ -376,7 +378,7 @@ mod tests {
     use std::time::Duration;
 
     #[tokio::test]
-    #[ntest::timeout(10_000)]
+    #[ntest::timeout(20_000)]
     async fn next_track_plays_on_end() {
         let (t_handle, config) = Config::test_cfg(true);
         let mut driver = Driver::new(config.clone());

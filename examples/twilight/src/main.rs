@@ -68,7 +68,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
         let http = HttpClient::new(token.clone());
         let user_id = http.current_user().exec().await?.model().await?.id;
 
-        let intents = Intents::GUILD_MESSAGES | Intents::GUILD_VOICE_STATES;
+        let intents = Intents::GUILD_MESSAGES | Intents::MESSAGE_CONTENT | Intents::GUILD_VOICE_STATES;
         let (cluster, events) = Cluster::new(token, intents).await?;
         cluster.up().await;
 
@@ -294,7 +294,7 @@ async fn seek(msg: Message, state: State) -> Result<(), Box<dyn Error + Send + S
     let store = state.trackdata.read().await;
 
     let content = if let Some(handle) = store.get(&guild_id) {
-        let _success = handle.seek_time(std::time::Duration::from_secs(position));
+        let _success = handle.seek(std::time::Duration::from_secs(position));
         format!("Seeking to {}s", position)
     } else {
         format!("No track to seek over!")

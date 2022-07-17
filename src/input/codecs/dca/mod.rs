@@ -285,7 +285,7 @@ impl FormatReader for DcaReader {
 
         let buf = self.source.read_boxed_slice_exact(p_len as usize)?;
 
-        let checked_buf = (&buf[..]).try_into().or_else(|_| {
+        let checked_buf = buf[..].try_into().or_else(|_| {
             symph_err::decode_error("Packet was not a valid Opus Packet: too large for audiopus.")
         })?;
 
@@ -332,5 +332,11 @@ mod tests {
     #[ntest::timeout(10_000)]
     async fn dca_backward_seek_correct() {
         backward_seek_correct(|| File::new(FILE_DCA_TARGET)).await;
+    }
+
+    #[tokio::test]
+    #[ntest::timeout(10_000)]
+    async fn opus_passthrough_when_other_tracks_paused() {
+        track_plays_passthrough_when_is_only_active(|| File::new(FILE_DCA_TARGET)).await;
     }
 }

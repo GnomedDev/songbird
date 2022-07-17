@@ -34,7 +34,6 @@ use rand::random;
 use rubato::{FftFixedOut, Resampler};
 use std::{
     io::Write,
-    result::Result as StdResult,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -54,6 +53,7 @@ use xsalsa20poly1305::TAG_SIZE;
 use crate::driver::test_config::{OutputMessage, OutputMode, TickStyle};
 #[cfg(test)]
 use discortp::Packet as _;
+
 pub struct Mixer {
     pub bitrate: Bitrate,
     pub config: Arc<Config>,
@@ -440,59 +440,18 @@ impl Mixer {
             // Changes to play state etc. MUST all be handled.
             let action = track.process_commands(i, &self.interconnect);
 
-            if let Some(time) = action.seek_point {
-                let backseek_needed = time < track.position;
-
-                let full_input = &mut track.input;
-                let time = Time::from(time.as_secs_f64());
-                let mut ts = SeekTo::Time {
-                    time,
-                    track_id: None,
-                };
-                let (tx, rx) = flume::bounded(1);
-
-                let queued_seek = if matches!(full_input, InputState::Preparing(_)) {
-                    Some(util::copy_seek_to(&ts))
-                } else {
-                    None
-                };
-
-                let mut new_state = InputState::Preparing(PreparingInfo {
-                    time: Instant::now(),
-                    callback: rx,
-                    queued_seek,
-                });
-
-                std::mem::swap(full_input, &mut new_state);
-
-                match new_state {
-                    InputState::Ready(p, r) => {
-                        if let SeekTo::Time { time: _, track_id } = &mut ts {
-                            *track_id = Some(p.track_id);
-                        }
-
-                        self.thread_pool
-                            .seek(tx, p, r, ts, backseek_needed, self.config.clone());
-                    },
-                    InputState::Preparing(old_prep) => {
-                        // Annoying case: we need to mem_swap for the other two cases,
-                        // but here we don't want to.
-                        // new_state contains the old request now, so we want to move its
-                        // callback and time *back* into self.full_inputs[i].
-                        if let InputState::Preparing(new_prep) = full_input {
-                            new_prep.callback = old_prep.callback;
-                            new_prep.time = old_prep.time;
-                        } else {
-                            unreachable!()
-                        }
-                    },
-                    InputState::NotReady(lazy) =>
-                        self.thread_pool
-                            .create(tx, lazy, Some(ts), self.config.clone()),
-                }
+            if let Some(req) = action.seek_point {
+                track.seek(
+                    i,
+                    req,
+                    &self.interconnect,
+                    &self.thread_pool,
+                    &self.config,
+                    self.prevent_events,
+                );
             }
 
-            if action.make_playable {
+            if let Some(callback) = action.make_playable {
                 if let Err(e) = track.get_or_ready_input(
                     i,
                     &self.interconnect,
@@ -500,16 +459,28 @@ impl Mixer {
                     &self.config,
                     self.prevent_events,
                 ) {
-                    if let Some(fail) = e.into_user() {
+                    track.callbacks.make_playable = Some(callback);
+                    if let Some(fail) = e.as_user() {
                         track.playing = PlayMode::Errored(fail);
                     }
+                    if let Some(req) = e.into_seek_request() {
+                        track.seek(
+                            i,
+                            req,
+                            &self.interconnect,
+                            &self.thread_pool,
+                            &self.config,
+                            self.prevent_events,
+                        );
+                    }
+                } else {
+                    // Track is already ready: don't register callback and just act.
+                    drop(callback.send(Ok(())));
                 }
             }
         }
 
-        // TODO: do without vec?
         let mut i = 0;
-        let mut to_remove = Vec::with_capacity(self.tracks.len());
         while i < self.tracks.len() {
             let track = self
                 .tracks
@@ -526,7 +497,6 @@ impl Mixer {
                 let to_drop = self.track_handles.swap_remove(i);
                 drop(self.disposer.send(DisposalMessage::Handle(to_drop)));
 
-                to_remove.push(i);
                 self.fire_event(EventMessage::ChangeState(
                     i,
                     TrackStateChange::Mode(p_state),
@@ -536,13 +506,9 @@ impl Mixer {
             }
         }
 
-        // Tick
+        // Tick -- receive side also handles removals in same manner after it increments
+        // times etc.
         self.fire_event(EventMessage::Tick)?;
-
-        // Then do removals.
-        for i in &to_remove[..] {
-            self.fire_event(EventMessage::RemoveTrack(*i))?;
-        }
 
         Ok(())
     }
@@ -592,6 +558,8 @@ impl Mixer {
     pub fn cycle(&mut self) -> Result<()> {
         let mut mix_buffer = [0f32; STEREO_FRAME_SIZE];
 
+        // symph_mix is an `AudioBuffer` (planar format), we need to convert this
+        // later into an interleaved `SampleBuffer` for libopus.
         self.symph_mix.clear();
         self.symph_mix.render_reserved(Some(MONO_FRAME_SIZE));
         self.resample_scratch.clear();
@@ -610,11 +578,12 @@ impl Mixer {
             mix_len = MixType::MixedPcm(0);
         }
 
+        // Explicit "Silence" frame handling: if there is no mixed data, we must send
+        // ~5 frames of silence (unless another good audio frame appears) before we
+        // stop sending RTP frames.
         if mix_len == MixType::MixedPcm(0) {
             if self.silence_frames > 0 {
                 self.silence_frames -= 1;
-
-                // Explicit "Silence" frame.
                 let mut rtp = MutableRtpPacket::new(&mut self.packet[..]).expect(
                     "FATAL: Too few bytes in self.packet for RTP header.\
                         (Blame: VOICE_PACKET_MAX?)",
@@ -629,7 +598,7 @@ impl Mixer {
             } else {
                 // Per official guidelines, send 5x silence BEFORE we stop speaking.
                 if let Some(ws) = &self.ws {
-                    // NOTE: this should prevent a catastrophic thread pileup.
+                    // NOTE: this explicit `drop` should prevent a catastrophic thread pileup.
                     // A full reconnect might cause an inner closed connection.
                     // It's safer to leave the central task to clean this up and
                     // pass the mixer a new channel.
@@ -653,6 +622,9 @@ impl Mixer {
             self.silence_frames = 5;
 
             if let MixType::MixedPcm(n) = mix_len {
+                // FIXME: When impling #134, prevent this copy from happening if softclip disabled.
+                // Offer sample_buffer.samples() to prep_and_send_packet.
+
                 // to apply soft_clip, we need this to be in a normal f32 buffer.
                 // unfortunately, SampleBuffer does not expose a `.samples_mut()`.
                 // hence, an extra copy...
@@ -704,6 +676,7 @@ impl Mixer {
         #[cfg(not(test))]
         self.prep_and_send_packet(&mix_buffer, mix_len)?;
 
+        // Zero out all planes of the mix buffer if any audio was written.
         if matches!(mix_len, MixType::MixedPcm(a) if a > 0) {
             for plane in self.symph_mix.planes_mut().planes() {
                 plane.fill(0.0);
@@ -733,6 +706,8 @@ impl Mixer {
             let payload = rtp.payload_mut();
             let crypto_mode = conn.crypto_state.kind();
 
+            // If passthrough, Opus payload in place already.
+            // Else encode into buffer with space for AEAD encryption headers.
             let payload_len = match mix_len {
                 MixType::Passthrough(opus_len) => opus_len,
                 MixType::MixedPcm(_samples) => {
@@ -770,7 +745,7 @@ impl Mixer {
             // Test mode: send unencrypted (compressed) packets to local receiver.
             drop(tx.send(self.packet[..index].to_vec().into()));
             self.length_check();
-            return Ok(())
+            return Ok(());
         }
 
         // Normal operation: send encrypted payload to Discord UDP Socket.
@@ -779,7 +754,7 @@ impl Mixer {
         self.length_check();
         Ok(())
     }
-    
+
     // TODO: come up with a better name
     fn length_check(&mut self) {
         let mut rtp = MutableRtpPacket::new(&mut self.packet[..]).expect(
@@ -801,20 +776,33 @@ impl Mixer {
         let opus_frame = &mut payload[TAG_SIZE..];
 
         // Opus frame passthrough.
-        // This requires that we have only one track, who has volume 1.0, and an
-        // Opus codec type (verified internally).
-        let do_passthrough = self.tracks.len() == 1 && {
-            let track = &self.tracks[0];
-            (track.volume - 1.0).abs() < f32::EPSILON
-        };
+        // This requires that we have only one PLAYING track, who has volume 1.0, and an
+        // Opus codec type (verified later in mix_symph_indiv).
+        //
+        // We *could* cache the number of live tracks separately, but that makes this
+        // quite fragile given all the ways a user can alter the PlayMode.
+        let mut num_live = 0;
+        let mut last_live_vol = 1.0;
+        for track in &self.tracks {
+            if track.playing.is_playing() {
+                num_live += 1;
+                last_live_vol = track.volume;
+            }
+        }
+        let do_passthrough = num_live == 1 && (last_live_vol - 1.0).abs() < f32::EPSILON;
 
         let mut len = 0;
         for (i, track) in self.tracks.iter_mut().enumerate() {
             let vol = track.volume;
 
-            if !track.playing.is_playing() {
+            // This specifically tries to get tracks who are "preparing",
+            // so that event handlers and the like can all be fired without
+            // the track being in a `Play` state.
+            if !track.should_check_input() {
                 continue;
             }
+
+            let should_play = track.playing.is_playing();
 
             let input = track.get_or_ready_input(
                 i,
@@ -827,20 +815,31 @@ impl Mixer {
             let (input, mix_state) = match input {
                 Ok(i) => i,
                 Err(InputReadyingError::Waiting) => continue,
+                Err(InputReadyingError::NeedsSeek(req)) => {
+                    track.seek(
+                        i,
+                        req,
+                        &self.interconnect,
+                        &self.thread_pool,
+                        &self.config,
+                        self.prevent_events,
+                    );
+                    continue;
+                },
                 // TODO: allow for retry in given time.
                 Err(e) => {
-                    if let Some(fail) = e.into_user() {
+                    if let Some(fail) = e.as_user() {
                         track.playing = PlayMode::Errored(fail);
                     }
                     continue;
                 },
             };
 
-            let opus_slot = if do_passthrough {
-                Some(&mut *opus_frame)
-            } else {
-                None
-            };
+            // Now that we have dealt with potential errors in preparing tracks,
+            // only do any mixing if the track is to be played!
+            if !should_play {
+                continue;
+            }
 
             let (mix_type, status) = mix_logic::mix_symph_indiv(
                 &mut self.symph_mix,
@@ -848,7 +847,7 @@ impl Mixer {
                 input,
                 mix_state,
                 vol,
-                opus_slot,
+                do_passthrough.then(|| &mut *opus_frame),
             );
 
             let return_here = if let MixType::MixedPcm(pcm_len) = mix_type {
@@ -870,7 +869,7 @@ impl Mixer {
                 MixStatus::Errored(e) =>
                     track.playing = PlayMode::Errored(PlayError::Decode(e.into())),
                 MixStatus::Ended if track.do_loop() => {
-                    let _ = self.track_handles[i].seek_time(Duration::default());
+                    drop(self.track_handles[i].seek(Duration::default()));
                     if !self.prevent_events {
                         // position update is sent out later, when the seek concludes.
                         drop(self.interconnect.events.send(EventMessage::ChangeState(
