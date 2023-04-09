@@ -98,13 +98,7 @@ pub(crate) fn convert_ws_message(message: Option<Message>) -> Result<Option<Even
         // access it as a `str`/`String` or return it if failure occurs.
         Some(Message::Text(mut payload)) => {
             let msg = unsafe { crate::json::from_str(payload.as_mut_str()) };
-            match msg {
-                Ok(msg) => Some(msg),
-                Err(err) => {
-                    tracing::warn!("Failed to parse message: {err}");
-                    None
-                }
-            }
+            msg.ok()
         }
         Some(Message::Binary(bytes)) => {
             return Err(Error::UnexpectedBinaryMessage(bytes));
