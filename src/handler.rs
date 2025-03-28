@@ -176,29 +176,21 @@ impl Call {
         self.self_deaf
     }
 
-    async fn should_actually_join<F, G>(
+    /// Returns the connection info, if there is a connection for this channel.
+    async fn get_connection_info(
         &mut self,
-        completion_generator: F,
-        tx: &Sender<G>,
         channel_id: ChannelId,
-    ) -> JoinResult<bool>
-    where
-        F: FnOnce(&Self) -> G,
-    {
-        Ok(if let Some(conn) = &self.connection {
-            if conn.0.in_progress() {
-                self.leave().await?;
-                true
-            } else if conn.0.channel_id() == channel_id {
-                drop(tx.send(completion_generator(self)));
-                false
-            } else {
-                // not in progress, and/or a channel change.
-                true
-            }
-        } else {
-            true
-        })
+    ) -> JoinResult<Option<&ConnectionInfo>> {
+        match self.connection.as_ref().map(|(info, _)| info) {
+            Some(ConnectionProgress::Complete(info)) if info.channel_id == Some(channel_id) =>
+                return Ok(Some(info)),
+            // not in progress, and/or a channel change.
+            Some(ConnectionProgress::Complete(_)) | None => return Ok(None),
+            Some(ConnectionProgress::Incomplete(_)) => {},
+        };
+
+        self.leave().await?;
+        Ok(None)
     }
 
     #[cfg(feature = "driver")]
@@ -224,13 +216,10 @@ impl Call {
 
     #[cfg(feature = "driver")]
     async fn join_inner(&mut self, channel_id: ChannelId) -> JoinResult<Join> {
+        let do_conn = self.get_connection_info(channel_id).await?;
+
         let (tx, rx) = flume::unbounded();
         let (gw_tx, gw_rx) = flume::unbounded();
-
-        let do_conn = self
-            .should_actually_join(|_| (), &gw_tx, channel_id)
-            .await?;
-
         if do_conn {
             self.connection = Some((
                 ConnectionProgress::new(self.guild_id, self.user_id, channel_id),
@@ -286,13 +275,7 @@ impl Call {
     async fn join_gateway_inner(&mut self, channel_id: ChannelId) -> JoinResult<JoinGateway> {
         let (tx, rx) = flume::unbounded();
 
-        let do_conn = self
-            .should_actually_join(
-                |call| call.connection.as_ref().unwrap().0.info().unwrap(),
-                &tx,
-                channel_id,
-            )
-            .await?;
+        let do_conn = self.should_actually_join(|call| channel_id).await?;
 
         if do_conn {
             self.connection = Some((
